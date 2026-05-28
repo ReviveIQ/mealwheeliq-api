@@ -3,7 +3,8 @@ const cors = require('cors');
 const mysql = require('mysql2/promise');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const stripeKey = process.env.STRIPE_SECRET_KEY;
+const stripe = stripeKey ? require('stripe')(stripeKey) : null;
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -526,10 +527,11 @@ app.post('/profiles', authMiddleware, async (req, res) => {
 
 // ─── STRIPE PAYMENTS ─────────────────────────────────────────────────────────
 app.post('/subscribe', authMiddleware, async (req, res) => {
+  if (!stripe) return res.status(503).json({ error: 'Payments not configured yet' });
   const { plan } = req.body;
   const prices = {
-    home_chef: process.env.STRIPE_HOME_CHEF_PRICE_ID,
-    family: process.env.STRIPE_FAMILY_PRICE_ID
+    home_chef: process.env.STRIPE_HOME_CHEF_PRICE_ID || null,
+    family: process.env.STRIPE_FAMILY_PRICE_ID || null
   };
   if (!prices[plan]) return res.status(400).json({ error: 'Invalid plan' });
 
@@ -562,13 +564,18 @@ app.post('/webhook', async (req, res) => {
 
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
-    const { userId, plan } = session.metadata;
-    await db.execute(
-      `INSERT INTO subscriptions (user_id, stripe_customer_id, stripe_subscription_id, plan, status)
-       VALUES (?, ?, ?, ?, 'active')
-       ON DUPLICATE KEY UPDATE plan = ?, status = 'active', stripe_subscription_id = ?`,
-      [userId, session.customer, session.subscription, plan, plan, session.subscription]
-    );
+    const userId = session.metadata?.userId || null;
+    const plan = session.metadata?.plan || 'free';
+    const customer = session.customer || null;
+    const subscription = session.subscription || null;
+    if (userId) {
+      await db.execute(
+        `INSERT INTO subscriptions (user_id, stripe_customer_id, stripe_subscription_id, plan, status)
+         VALUES (?, ?, ?, ?, 'active')
+         ON DUPLICATE KEY UPDATE plan = ?, status = 'active', stripe_subscription_id = ?`,
+        [userId, customer, subscription, plan, plan, subscription]
+      );
+    }
   }
 
   if (event.type === 'customer.subscription.deleted') {
