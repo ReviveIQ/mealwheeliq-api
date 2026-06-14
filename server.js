@@ -363,6 +363,7 @@ app.post('/generate', authMiddleware, async (req, res) => {
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
         max_tokens: 1500,
+        system: 'You are a professional chef AI. You MUST respond with valid JSON only — no markdown, no backticks, no prose. Your entire response must be parseable by JSON.parse().',
         messages: [{ role: 'user', content: prompt }]
       })
     });
