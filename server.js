@@ -362,7 +362,7 @@ app.post('/generate', authMiddleware, async (req, res) => {
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 4000,
+        max_tokens: 8000,
         system: 'You are a professional chef AI. You MUST respond with valid JSON only — no markdown, no backticks, no prose. Your entire response must be parseable by JSON.parse().',
         messages: [{ role: 'user', content: prompt }]
       })
@@ -377,7 +377,16 @@ app.post('/generate', authMiddleware, async (req, res) => {
     // Parse and save to recipe history
     try {
       const raw = data.content.map(b => b.text || '').join('');
-      const clean = raw.replace(/```json|```/g, '').trim();
+      let clean = raw.replace(/```json|```/g, '').trim();
+      // Safety net: if JSON is truncated, close any open arrays/objects
+      try { JSON.parse(clean); } catch(e) {
+        // Attempt to recover by closing open structures
+        const opens = (clean.match(/\[/g)||[]).length - (clean.match(/\]/g)||[]).length;
+        const openBraces = (clean.match(/\{/g)||[]).length - (clean.match(/\}/g)||[]).length;
+        // Trim to last complete recipe by finding last complete }] pattern
+        const lastComplete = clean.lastIndexOf('}]');
+        if (lastComplete > 0) clean = clean.substring(0, lastComplete + 2) + '}';
+      }
       const parsed = JSON.parse(clean);
       const recipes = parsed.recipes || [];
 
