@@ -8,7 +8,7 @@ const stripe = stripeKey ? require('stripe')(stripeKey) : null;
 
 const app = express();
 const PORT = process.env.PORT || 8080;
-const JWT_SECRET = process.env.JWT_SECRET || 'mealswheel-secret-change-in-production';
+const JWT_SECRET = process.env.JWT_SECRET || 'mealwheeliq-secret-change-in-production';
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 app.use(cors({
@@ -600,8 +600,8 @@ app.post('/subscribe', authMiddleware, async (req, res) => {
       customer_email: users[0].email,
       line_items: [{ price: prices[plan], quantity: 1 }],
       metadata: { userId: req.user.userId, plan },
-      success_url: 'https://reviveiq.github.io/mealswheel?subscribed=true',
-      cancel_url: 'https://reviveiq.github.io/mealswheel?cancelled=true'
+      success_url: 'https://reviveiq.github.io/mealwheeliq?subscribed=true',
+      cancel_url: 'https://reviveiq.github.io/mealwheeliq?cancelled=true'
     });
     res.json({ url: session.url });
   } catch (err) {
