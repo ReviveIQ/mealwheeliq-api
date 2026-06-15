@@ -655,12 +655,24 @@ app.post('/webhook', async (req, res) => {
 });
 
 // ─── START ───────────────────────────────────────────────────────────────────
-connectDB()
-  .then(createTables)
-  .then(() => {
-    app.listen(PORT, () => console.log(`MealsWheel API running on port ${PORT}`));
-  })
-  .catch(err => {
-    console.error('Failed to start:', err);
-    process.exit(1);
-  });
+async function startWithRetry(retries = 5, delayMs = 5000) {
+  for (let i = 1; i <= retries; i++) {
+    try {
+      await connectDB();
+      await createTables();
+      app.listen(PORT, () => console.log(`MealsWheel API running on port ${PORT}`));
+      return;
+    } catch (err) {
+      console.error(`Startup attempt ${i}/${retries} failed:`, err.message);
+      if (i < retries) {
+        console.log(`Retrying in ${delayMs/1000}s...`);
+        await new Promise(r => setTimeout(r, delayMs));
+      } else {
+        console.error('All startup attempts failed. Exiting.');
+        process.exit(1);
+      }
+    }
+  }
+}
+
+startWithRetry();
