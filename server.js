@@ -545,7 +545,7 @@ app.post('/profiles', authMiddleware, async (req, res) => {
 });
 
 // ─── RECIPE RATING ──────────────────────────────────────────────────────────
-app.post('/recipes/:id/rate', authenticateToken, async (req, res) => {
+app.post('/recipes/:id/rate', authMiddleware, async (req, res) => {
   const { stars } = req.body;
   const recipeId = parseInt(req.params.id);
   if (!stars || stars < 1 || stars > 5) return res.status(400).json({ error: 'stars must be 1-5' });
