@@ -74,7 +74,7 @@ async function createTables() {
       user_id INT NOT NULL,
       stripe_customer_id VARCHAR(255),
       stripe_subscription_id VARCHAR(255),
-      plan ENUM('free', 'home_chef', 'family') DEFAULT 'free',
+      plan ENUM('free', 'trial', 'home_chef', 'family') DEFAULT 'free',
       status ENUM('active', 'cancelled', 'past_due', 'trialing') DEFAULT 'active',
       current_period_end TIMESTAMP NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -352,12 +352,17 @@ app.post('/generate', authMiddleware, async (req, res) => {
   // Check spin limit for free users
   const plan = await getUserPlan(req.user.userId);
   if (plan === 'free') {
-    const spinCount = await getSpinCount(req.user.userId);
-    if (spinCount >= 5) {
+    // Free trial: 5 lifetime spins
+    const [totals] = await db.execute(
+      'SELECT COALESCE(SUM(count),0) as total FROM spin_counts WHERE user_id=?',
+      [req.user.userId]
+    );
+    const totalSpins = parseInt(totals[0].total) || 0;
+    if (totalSpins >= 5) {
       return res.status(403).json({
         error: 'spin_limit_reached',
-        message: 'You have used all 5 free spins this month. Upgrade to Home Chef for unlimited spins.',
-        spinCount,
+        message: 'Your 5 free spins are up! Upgrade to keep cooking.',
+        spinCount: totalSpins,
         limit: 5
       });
     }
@@ -427,7 +432,7 @@ app.post('/generate', authMiddleware, async (req, res) => {
 // ─── RECIPE HISTORY ──────────────────────────────────────────────────────────
 app.get('/history', authMiddleware, async (req, res) => {
   const plan = await getUserPlan(req.user.userId);
-  const limit = plan === 'free' ? 5 : 1000;
+  const limit = plan === 'free' ? 0 : 1000; // free gets no history
   const [rows] = await db.execute(
     'SELECT * FROM recipe_history WHERE user_id = ? ORDER BY spun_at DESC LIMIT ?',
     [req.user.userId, limit]
@@ -523,7 +528,7 @@ app.post('/mealplans', authMiddleware, async (req, res) => {
 // ─── FAMILY PROFILES ─────────────────────────────────────────────────────────
 app.get('/profiles', authMiddleware, async (req, res) => {
   const plan = await getUserPlan(req.user.userId);
-  if (plan !== 'family') return res.status(403).json({ error: 'Family plan required' });
+  if (plan !== 'family') return res.status(403).json({ error: 'Family plan required. Upgrade to the Family plan for multiple profiles.' });
   const [rows] = await db.execute(
     'SELECT * FROM family_profiles WHERE owner_user_id = ?',
     [req.user.userId]
@@ -533,7 +538,7 @@ app.get('/profiles', authMiddleware, async (req, res) => {
 
 app.post('/profiles', authMiddleware, async (req, res) => {
   const plan = await getUserPlan(req.user.userId);
-  if (plan !== 'family') return res.status(403).json({ error: 'Family plan required' });
+  if (plan !== 'family') return res.status(403).json({ error: 'Family plan required. Upgrade to the Family plan for multiple profiles.' });
   const [existing] = await db.execute(
     'SELECT COUNT(*) as count FROM family_profiles WHERE owner_user_id = ?',
     [req.user.userId]
@@ -590,6 +595,7 @@ app.post('/subscribe', authMiddleware, async (req, res) => {
   if (!stripe) return res.status(503).json({ error: 'Payments not configured yet' });
   const { plan } = req.body;
   const prices = {
+    trial: process.env.STRIPE_TRIAL_PRICE_ID || null,
     home_chef: process.env.STRIPE_HOME_CHEF_PRICE_ID || null,
     family: process.env.STRIPE_FAMILY_PRICE_ID || null
   };
