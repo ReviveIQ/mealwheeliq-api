@@ -394,6 +394,7 @@ app.post('/generate', authMiddleware, async (req, res) => {
     try {
       const raw = data.content.map(b => b.text || '').join('');
       let clean = raw.replace(/```json|```/g, '').trim();
+      let recipes = [];
       // Safety net: if JSON is truncated, close any open arrays/objects
       try { JSON.parse(clean); } catch(e) {
         // Attempt to recover by closing open structures
@@ -404,7 +405,7 @@ app.post('/generate', authMiddleware, async (req, res) => {
         if (lastComplete > 0) clean = clean.substring(0, lastComplete + 2) + '}';
       }
       const parsed = JSON.parse(clean);
-      const recipes = parsed.recipes || [];
+      recipes = parsed.recipes || [];
 
       for (const r of recipes) {
         const [result] = await db.execute(
