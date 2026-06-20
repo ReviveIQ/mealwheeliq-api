@@ -89,6 +89,7 @@ async function createTables() {
       daily_calorie_goal INT DEFAULT 2000,
       servings INT DEFAULT 2,
       dietary_preferences JSON,
+      chef_name VARCHAR(50) DEFAULT 'Chef Claude',
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id)
     )
