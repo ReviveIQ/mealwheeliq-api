@@ -382,7 +382,16 @@ app.post('/generate', authMiddleware, async (req, res) => {
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
         max_tokens: 8000,
-        system: 'You are a professional chef AI. You MUST respond with valid JSON only — no markdown, no backticks, no prose. Your entire response must be parseable by JSON.parse().',
+        system: `You are a professional chef AI. You MUST respond with valid JSON only — no markdown, no backticks, no prose. Your entire response must be parseable by JSON.parse().
+
+Recipe steps must follow professional cookbook standards (America's Test Kitchen / Bon Appetit style):
+- Lead every step with an action verb (Heat, Sear, Brown, Stir, Whisk, Simmer, Roast, Toss, Garnish, Season)
+- Combine related actions — never split "add X" and "stir X" into separate steps
+- Include timing AND visual cues: "cook until golden, about 4 minutes" not just "cook chicken"
+- Organize by cooking phase: Prep → Sear → Build flavor → Simmer/Bake → Finish → Serve
+- Final step must season and include a service instruction
+- Target 5–7 steps. Maximum 8. Eliminate all micro-steps.
+- Never use passive voice or start steps with "The", "Once", or "After".`,
         messages: [{ role: 'user', content: prompt }]
       })
     });
