@@ -306,17 +306,24 @@ app.get('/auth/me', authMiddleware, async (req, res) => {
 // ─── PREFERENCES ─────────────────────────────────────────────────────────────
 app.get('/preferences', authMiddleware, async (req, res) => {
   const [rows] = await db.execute('SELECT * FROM user_preferences WHERE user_id = ?', [req.user.userId]);
-  res.json(rows[0] || {});
+  if (!rows.length) return res.json({ daily_calorie_goal: 2000, servings: 2, dietary_preferences: [], chef_name: 'Chef' });
+  const r = rows[0];
+  res.json({
+    daily_calorie_goal: r.daily_calorie_goal,
+    servings: r.servings,
+    dietary_preferences: JSON.parse(r.dietary_preferences || '[]'),
+    chef_name: r.chef_name || 'Chef'
+  });
 });
 
 app.put('/preferences', authMiddleware, async (req, res) => {
-  const { daily_calorie_goal, servings, dietary_preferences } = req.body;
+  const { daily_calorie_goal, servings, dietary_preferences, chef_name } = req.body;
   await db.execute(
-    `INSERT INTO user_preferences (user_id, daily_calorie_goal, servings, dietary_preferences)
-     VALUES (?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE daily_calorie_goal = ?, servings = ?, dietary_preferences = ?`,
-    [req.user.userId, daily_calorie_goal, servings, JSON.stringify(dietary_preferences),
-     daily_calorie_goal, servings, JSON.stringify(dietary_preferences)]
+    `INSERT INTO user_preferences (user_id, daily_calorie_goal, servings, dietary_preferences, chef_name)
+     VALUES (?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE daily_calorie_goal = ?, servings = ?, dietary_preferences = ?, chef_name = ?`,
+    [req.user.userId, daily_calorie_goal, servings, JSON.stringify(dietary_preferences), chef_name || 'Chef',
+     daily_calorie_goal, servings, JSON.stringify(dietary_preferences), chef_name || 'Chef']
   );
   res.json({ success: true });
 });
