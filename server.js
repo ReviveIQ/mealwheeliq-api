@@ -194,6 +194,14 @@ async function createTables() {
     )
   `);
 
+  // Migration: add chef_name column to existing user_preferences tables
+  try {
+    await db.execute("ALTER TABLE user_preferences ADD COLUMN chef_name VARCHAR(50) DEFAULT 'Chef'");
+    console.log('Migration: chef_name column added');
+  } catch(e) {
+    // Column already exists — safe to ignore
+  }
+
   console.log('All tables created');
 }
 
