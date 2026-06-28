@@ -431,14 +431,19 @@ Recipe steps must follow professional cookbook standards (America's Test Kitchen
     try {
       const raw = data.content.map(b => b.text || '').join('');
       let clean = raw.replace(/```json|```/g, '').trim();
-      // Safety net: if JSON is truncated, close any open arrays/objects
+      // Safety net: if JSON is truncated, attempt recovery
       try { JSON.parse(clean); } catch(e) {
-        // Attempt to recover by closing open structures
-        const opens = (clean.match(/\[/g)||[]).length - (clean.match(/\]/g)||[]).length;
-        const openBraces = (clean.match(/\{/g)||[]).length - (clean.match(/\}/g)||[]).length;
-        // Trim to last complete recipe by finding last complete }] pattern
-        const lastComplete = clean.lastIndexOf('}]');
-        if (lastComplete > 0) clean = clean.substring(0, lastComplete + 2) + '}';
+        let recovered = clean;
+        const lastStep = recovered.lastIndexOf('"]}');
+        if (lastStep > 0) {
+          recovered = recovered.substring(0, lastStep + 3);
+          const openA = (recovered.match(/\[/g)||[]).length - (recovered.match(/\]/g)||[]).length;
+          const openB = (recovered.match(/\{/g)||[]).length - (recovered.match(/\}/g)||[]).length;
+          recovered += ']'.repeat(Math.max(0,openA)) + '}'.repeat(Math.max(0,openB));
+        }
+        try { JSON.parse(recovered); clean = recovered; } catch(e2) {
+          clean = '{"recipes":[]}';
+        }
       }
       const parsed = JSON.parse(clean);
       recipes = parsed.recipes || [];
