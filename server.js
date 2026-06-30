@@ -21,7 +21,7 @@ app.use(cors({
 
 // Raw body for Stripe webhooks
 app.use('/webhook', express.raw({ type: 'application/json' }));
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 // ─── DATABASE CONNECTION ─────────────────────────────────────────────────────
 let db;
@@ -202,7 +202,7 @@ async function createTables() {
     // Column already exists — safe to ignore
   }
 
-  console.log('All tables created'); // deploy-trigger-1782838635
+  console.log('All tables created');
 }
 
 // Safe JSON parse — handles already-parsed objects (TiDB returns parsed JSON)
@@ -785,5 +785,3 @@ async function startWithRetry(retries = 5, delayMs = 5000) {
 }
 
 startWithRetry();
-
-// retrigger-after-wait-for-ci-disabled
