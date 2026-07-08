@@ -823,6 +823,50 @@ app.post('/quickspin/checkout', async (req, res) => {
   }
 });
 
+// POST /quickspin/scan — public pantry scan, no auth required
+app.post('/quickspin/scan', async (req, res) => {
+  const { image, mediaType } = req.body;
+  if (!image) return res.status(400).json({ error: 'No image provided' });
+
+  try {
+    const Anthropic = require('@anthropic-ai/sdk');
+    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+    const message = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1000,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: mediaType || 'image/jpeg', data: image }
+          },
+          {
+            type: 'text',
+            text: `Look at this photo of a fridge or pantry. List every food ingredient you can identify.
+Do NOT include: condiments, spices, sauces, oils, or beverages unless they are clearly a main cooking ingredient.
+Do NOT include: non-food items, packaging you cannot read, or unclear items.
+Return ONLY a JSON array of ingredient names, concise and clean.
+Example: ["chicken breast", "broccoli", "eggs", "sweet potatoes", "ground turkey"]
+Respond with ONLY the JSON array, nothing else.`
+          }
+        ]
+      }]
+    });
+
+    const raw = message.content.map(b => b.text || '').join('').trim();
+    const items = JSON.parse(raw.replace(/```json|```/g, '').trim());
+
+    if (!Array.isArray(items)) throw new Error('Invalid response format');
+    res.json({ items: items.slice(0, 40) });
+
+  } catch(e) {
+    console.error('QuickSpin scan error:', e);
+    res.status(400).json({ error: 'Could not process image. Please try a clearer photo or type your ingredients.' });
+  }
+});
+
 // POST /quickspin/generate — generate recipe(s) for paid session
 app.post('/quickspin/generate', async (req, res) => {
   const { token, ingredients, craving } = req.body;
