@@ -1,7 +1,7 @@
 {
   "name": "mealswheel-api",
   "version": "1.0.0",
-  "description": "MealsWheel API server — auth, recipes, subscriptions",
+  "description": "MealsWheel API server \u2014 auth, recipes, subscriptions",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -13,7 +13,9 @@
     "express": "^4.18.2",
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.6.5",
-    "stripe": "^14.18.0"
+    "stripe": "^14.18.0",
+    "resend": "^3.2.0",
+    "@anthropic-ai/sdk": "^0.24.0"
   },
   "engines": {
     "node": ">=18.0.0"
