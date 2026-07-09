@@ -1037,6 +1037,97 @@ app.get('/recipe/:id', async (req, res) => {
   }
 });
 
+// ─── ADMIN ───────────────────────────────────────────────────────────────────
+
+// Simple admin auth — checks for ADMIN_SECRET env var
+const adminAuth = (req, res, next) => {
+  const secret = req.headers['x-admin-secret'] || req.query.secret;
+  if (!secret || secret !== process.env.ADMIN_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+};
+
+// GET /admin/user?email=xxx or ?id=xxx — look up a user
+app.get('/admin/user', adminAuth, async (req, res) => {
+  const { email, id } = req.query;
+  if (!email && !id) return res.status(400).json({ error: 'Provide email or id' });
+  try {
+    const where = id ? 'u.id = ?' : 'u.email = ?';
+    const val = id || email;
+    const [rows] = await db.execute(
+      `SELECT u.id, u.email, u.created_at, s.plan, s.status, s.stripe_customer_id,
+       (SELECT COUNT(*) FROM recipe_history WHERE user_id = u.id) as recipe_count,
+       (SELECT COUNT(*) FROM spin_counts WHERE user_id = u.id) as spin_months
+       FROM users u LEFT JOIN subscriptions s ON u.id = s.user_id WHERE ${where}`,
+      [val]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'User not found' });
+    res.json(rows[0]);
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /admin/upgrade — upgrade a user's plan
+// Body: { userId, plan } — plan: 'free' | 'home_chef' | 'family'
+app.post('/admin/upgrade', adminAuth, async (req, res) => {
+  const { userId, plan } = req.body;
+  const validPlans = ['free', 'home_chef', 'family'];
+  if (!userId || !plan || !validPlans.includes(plan)) {
+    return res.status(400).json({ error: 'Provide userId and valid plan (free/home_chef/family)' });
+  }
+  try {
+    // Check user exists
+    const [users] = await db.execute('SELECT id, email FROM users WHERE id = ?', [userId]);
+    if (!users.length) return res.status(404).json({ error: 'User not found' });
+
+    // Update plan
+    const [result] = await db.execute(
+      'UPDATE subscriptions SET plan = ?, status = "active" WHERE user_id = ?',
+      [plan, userId]
+    );
+
+    if (result.affectedRows === 0) {
+      // No subscription row exists — insert one
+      await db.execute(
+        'INSERT INTO subscriptions (user_id, plan, status) VALUES (?, ?, "active")',
+        [userId, plan]
+      );
+    }
+
+    // Clear spin count so they start fresh
+    if (plan !== 'free') {
+      await db.execute('DELETE FROM spin_counts WHERE user_id = ?', [userId]);
+    }
+
+    res.json({
+      success: true,
+      user: users[0].email,
+      userId,
+      plan,
+      message: `${users[0].email} upgraded to ${plan}`
+    });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /admin/users — list recent users
+app.get('/admin/users', adminAuth, async (req, res) => {
+  try {
+    const [rows] = await db.execute(
+      `SELECT u.id, u.email, u.created_at, s.plan, s.status,
+       (SELECT COUNT(*) FROM recipe_history WHERE user_id = u.id) as recipes
+       FROM users u LEFT JOIN subscriptions s ON u.id = s.user_id
+       ORDER BY u.created_at DESC LIMIT 50`
+    );
+    res.json({ users: rows, count: rows.length });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ─── QUICKSPIN — ONE-TIME PURCHASE ───────────────────────────────────────────
 
 const { Resend } = (() => {
