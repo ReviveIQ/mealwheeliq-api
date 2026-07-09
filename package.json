@@ -15,7 +15,8 @@
     "mysql2": "^3.6.5",
     "stripe": "^14.18.0",
     "resend": "^3.2.0",
-    "@anthropic-ai/sdk": "^0.24.0"
+    "@anthropic-ai/sdk": "^0.24.0",
+    "openai": "^4.28.0"
   },
   "engines": {
     "node": ">=18.0.0"
