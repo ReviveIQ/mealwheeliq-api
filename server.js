@@ -842,11 +842,46 @@ app.post('/recipe/:id/generate-image', authMiddleware, async (req, res) => {
   }
 });
 
-// POST /recipe/:id/og-page — build and push static OG HTML to GitHub Pages
-// GitHub Pages is always fast — no cold start issues for Facebook crawler
+// POST /recipe/:id/og-page — build and push static OG HTML + image to GitHub Pages
 app.post('/recipe/:id/og-page', authMiddleware, async (req, res) => {
   const recipeId = req.params.id;
   const { imageUrl } = req.body;
+  const https = require('https');
+  const ghToken = process.env.GITHUB_TOKEN || process.env.GITHUB_PAT;
+
+  // Helper: GitHub API call using native https
+  const ghRequest = (method, url, body, token) => new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const data = body ? JSON.stringify(body) : null;
+    const opts = {
+      hostname: parsed.hostname, path: parsed.pathname, method,
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'MealWheelIQ/1.0',
+        ...(data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {})
+      }
+    };
+    const req = https.request(opts, r => {
+      let buf = ''; r.on('data', c => buf += c);
+      r.on('end', () => { try { resolve({ status: r.statusCode, data: JSON.parse(buf) }); } catch(e) { resolve({ status: r.statusCode, data: buf }); }});
+    });
+    req.on('error', reject);
+    if (data) req.write(data);
+    req.end();
+  });
+
+  // Helper: push file to GitHub
+  const ghPush = async (path, content, message) => {
+    const url = `https://api.github.com/repos/ReviveIQ/mealwheeliq/contents/${path}`;
+    let sha = null;
+    try { const c = await ghRequest('GET', url, null, ghToken); if (c.status === 200) sha = c.data.sha; } catch(e) {}
+    const body = { message, content };
+    if (sha) body.sha = sha;
+    const result = await ghRequest('PUT', url, body, ghToken);
+    console.log(`GitHub push ${path}:`, result.status, result.data?.commit?.sha?.slice(0,7) || result.data?.message || '');
+    return result;
+  };
 
   try {
     const [rows] = await db.execute(
@@ -862,10 +897,35 @@ app.post('/recipe/:id/og-page', authMiddleware, async (req, res) => {
     const title = `${r.emoji || '🍽️'} ${r.recipe_name} — MealWheelIQ`;
     const desc = `${r.recipe_name}: ${top3}${more}. ${r.time || '30 min'} · ${r.calories_per_serving} kcal · Spun on MealWheelIQ — get your own AI recipe free at mealwheeliq.com`;
     const pageUrl = `https://mealwheeliq.com/recipe.html?id=${r.id}`;
-    const imgUrl = imageUrl || 'https://mealwheeliq.com/icons/icon-512.png';
     const ogUrl = `https://mealwheeliq.com/og/${recipeId}.html`;
 
-    // Build the static OG HTML
+    // Download DALL-E image and store permanently in GitHub (DALL-E URLs expire in ~1hr)
+    let finalImgUrl = 'https://mealwheeliq.com/icons/icon-512.png';
+    if (ghToken && imageUrl && imageUrl.startsWith('http')) {
+      try {
+        const imgBuf = await new Promise((resolve, reject) => {
+          https.get(imageUrl, res => {
+            const chunks = [];
+            res.on('data', c => chunks.push(c));
+            res.on('end', () => resolve(Buffer.concat(chunks)));
+            res.on('error', reject);
+          });
+        });
+        await ghPush(
+          `og/img/${recipeId}.png`,
+          imgBuf.toString('base64'),
+          `img: recipe ${recipeId} photo`
+        );
+        finalImgUrl = `https://mealwheeliq.com/og/img/${recipeId}.png`;
+        // Also update image_url in DB with permanent URL
+        await db.execute('UPDATE recipe_history SET image_url = ? WHERE id = ?', [finalImgUrl, recipeId]);
+        console.log('Permanent image URL saved:', finalImgUrl);
+      } catch(e) {
+        console.log('Image store error:', e.message);
+      }
+    }
+
+    // Build OG HTML with permanent image URL
     const html = `<!DOCTYPE html>
 <html prefix="og: http://ogp.me/ns#">
 <head>
@@ -873,7 +933,7 @@ app.post('/recipe/:id/og-page', authMiddleware, async (req, res) => {
   <title>${title}</title>
   <meta property="og:title" content="${title}">
   <meta property="og:description" content="${desc}">
-  <meta property="og:image" content="${imgUrl}">
+  <meta property="og:image" content="${finalImgUrl}">
   <meta property="og:image:width" content="1024">
   <meta property="og:image:height" content="1024">
   <meta property="og:image:type" content="image/png">
@@ -883,7 +943,7 @@ app.post('/recipe/:id/og-page', authMiddleware, async (req, res) => {
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="${title}">
   <meta name="twitter:description" content="${desc}">
-  <meta name="twitter:image" content="${imgUrl}">
+  <meta name="twitter:image" content="${finalImgUrl}">
   <link rel="canonical" href="${pageUrl}">
   <meta http-equiv="refresh" content="0;url=${pageUrl}">
 </head>
@@ -894,48 +954,17 @@ app.post('/recipe/:id/og-page', authMiddleware, async (req, res) => {
 </body>
 </html>`;
 
-    // Push to GitHub Pages via API
-    const token = process.env.GITHUB_TOKEN || process.env.GITHUB_PAT;
-    if (token) {
-      const path = `og/${recipeId}.html`;
-      const apiUrl = `https://api.github.com/repos/ReviveIQ/mealwheeliq/contents/${path}`;
-
-      // Check if file exists to get SHA
-      let sha = null;
-      try {
-        const checkResp = await fetch(apiUrl, {
-          headers: { 'Authorization': `token ${token}`, 'Accept': 'application/vnd.github.v3+json' }
-        });
-        if (checkResp.ok) {
-          const existing = await checkResp.json();
-          sha = existing.sha;
-        }
-      } catch(e) {}
-
-      const body = {
-        message: `feat: OG page for recipe ${recipeId} — ${r.recipe_name}`,
-        content: Buffer.from(html).toString('base64')
-      };
-      if (sha) body.sha = sha;
-
-      await fetch(apiUrl, {
-        method: 'PUT',
-        headers: {
-          'Authorization': `token ${token}`,
-          'Content-Type': 'application/json',
-          'Accept': 'application/vnd.github.v3+json'
-        },
-        body: JSON.stringify(body)
-      });
+    if (ghToken) {
+      await ghPush(`og/${recipeId}.html`, Buffer.from(html).toString('base64'), `feat: OG page for recipe ${recipeId} — ${r.recipe_name}`);
     }
 
     res.json({ pageUrl: ogUrl });
   } catch(e) {
-    console.error('OG page error:', e);
-    // Fallback — return direct recipe page URL
+    console.error('OG page error:', e.message);
     res.json({ pageUrl: `https://mealwheeliq.com/recipe.html?id=${recipeId}` });
   }
 });
+
 
 // ─── PUBLIC RECIPE PAGE ───────────────────────────────────────────────────────
 
