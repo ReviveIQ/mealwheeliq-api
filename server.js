@@ -194,12 +194,26 @@ async function createTables() {
     )
   `);
 
-  // Migration: add chef_name column to existing user_preferences tables
-  try {
-    await db.execute("ALTER TABLE user_preferences ADD COLUMN chef_name VARCHAR(50) DEFAULT 'Chef'");
-    console.log('Migration: chef_name column added');
-  } catch(e) {
-    // Column already exists — safe to ignore
+  // ── Migrations — safe to run on every boot, errors mean column exists ────────
+  const migrations = [
+    { sql: "ALTER TABLE user_preferences ADD COLUMN chef_name VARCHAR(50) DEFAULT 'Chef'", name: 'chef_name' },
+    { sql: "ALTER TABLE recipe_history ADD COLUMN time VARCHAR(50)", name: 'time' },
+    { sql: "ALTER TABLE recipe_history ADD COLUMN difficulty VARCHAR(50)", name: 'difficulty' },
+    { sql: "ALTER TABLE recipe_history ADD COLUMN style VARCHAR(100)", name: 'style' },
+    { sql: "ALTER TABLE recipe_history ADD COLUMN fiber_g DECIMAL(5,1)", name: 'fiber_g' },
+    { sql: "ALTER TABLE recipe_history ADD COLUMN sodium_mg INT", name: 'sodium_mg' },
+    { sql: "ALTER TABLE recipe_history ADD COLUMN nutrition_source VARCHAR(50)", name: 'nutrition_source' },
+    { sql: "ALTER TABLE recipe_history ADD COLUMN image_url TEXT", name: 'image_url' },
+    { sql: "ALTER TABLE recipe_history ADD COLUMN fiber_g DECIMAL(5,1)", name: 'fiber_g' },
+  ];
+
+  for (const m of migrations) {
+    try {
+      await db.execute(m.sql);
+      console.log(`Migration applied: ${m.name}`);
+    } catch(e) {
+      // Column already exists — safe to ignore
+    }
   }
 
   console.log('All tables created');
@@ -890,7 +904,7 @@ app.post('/recipe/:id/og-page', authMiddleware, async (req, res) => {
       let sha = null;
       try {
         const checkResp = await fetch(apiUrl, {
-          headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.github.v3+json' }
+          headers: { 'Authorization': `token ${token}`, 'Accept': 'application/vnd.github.v3+json' }
         });
         if (checkResp.ok) {
           const existing = await checkResp.json();
@@ -907,7 +921,7 @@ app.post('/recipe/:id/og-page', authMiddleware, async (req, res) => {
       await fetch(apiUrl, {
         method: 'PUT',
         headers: {
-          'Authorization': `Bearer ${token}`,
+          'Authorization': `token ${token}`,
           'Content-Type': 'application/json',
           'Accept': 'application/vnd.github.v3+json'
         },
