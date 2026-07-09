@@ -848,54 +848,31 @@ app.post('/recipe/:id/og-page', authMiddleware, async (req, res) => {
     const pageUrl = `https://mealwheeliq.com/recipe.html?id=${r.id}`;
     const ogUrl = `https://mealwheeliq.com/og/${recipeId}.html`;
 
-    // Check DB for cached image first
-    const [imgRows] = await db.execute('SELECT image_url FROM recipe_history WHERE id = ?', [recipeId]);
-    let finalImgUrl = imgRows[0]?.image_url || null;
-
-    if (!finalImgUrl) {
-      // Try gpt-image-1 (available on this account) — returns base64
+    // Download DALL-E image and store permanently in GitHub (DALL-E URLs expire in ~1hr)
+    let finalImgUrl = 'https://mealwheeliq.com/icons/icon-512.png';
+    if (ghToken && imageUrl && imageUrl.startsWith('http')) {
       try {
-        const OpenAI = require('openai');
-        const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-        const prompt = `Professional food photography of ${r.recipe_name}. Overhead shot on a rustic wooden table, natural window lighting, beautifully plated and garnished, appetizing and magazine-quality. No text, no watermarks, photorealistic.`;
-
-        const imgResp = await Promise.race([
-          openai.images.generate({ model: 'gpt-image-1', prompt, n: 1, size: '1024x1024' }),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 25000))
-        ]);
-
-        const b64 = imgResp.data[0].b64_json;
-        if (b64) {
-          await ghPush(`og/img/${recipeId}.png`, b64, `img: recipe ${recipeId} AI food photo`);
-          finalImgUrl = `https://mealwheeliq.com/og/img/${recipeId}.png`;
-          await db.execute('UPDATE recipe_history SET image_url = ? WHERE id = ?', [finalImgUrl, recipeId]);
-          console.log('gpt-image-1 stored:', finalImgUrl);
-        }
-      } catch(e) {
-        console.log('gpt-image-1 skipped:', e.message);
-
-        // Fallback: Unsplash food photo
-        try {
-          const searchQuery = encodeURIComponent(r.recipe_name + ' food photography');
-          const unsplashUrl = `https://source.unsplash.com/1200x630/?${searchQuery}`;
-          const resolvedUrl = await new Promise((resolve, reject) => {
-            https.get(unsplashUrl, { headers: { 'User-Agent': 'MealWheelIQ/1.0' } }, res => {
-              resolve(res.headers.location || (res.statusCode === 200 ? unsplashUrl : null));
-              res.destroy();
-            }).on('error', reject);
+        const imgBuf = await new Promise((resolve, reject) => {
+          https.get(imageUrl, res => {
+            const chunks = [];
+            res.on('data', c => chunks.push(c));
+            res.on('end', () => resolve(Buffer.concat(chunks)));
+            res.on('error', reject);
           });
-          if (resolvedUrl) {
-            finalImgUrl = resolvedUrl;
-            await db.execute('UPDATE recipe_history SET image_url = ? WHERE id = ?', [finalImgUrl, recipeId]);
-            console.log('Unsplash fallback:', finalImgUrl.slice(0, 80));
-          }
-        } catch(e2) {
-          console.log('Unsplash skipped:', e2.message);
-        }
+        });
+        await ghPush(
+          `og/img/${recipeId}.png`,
+          imgBuf.toString('base64'),
+          `img: recipe ${recipeId} photo`
+        );
+        finalImgUrl = `https://mealwheeliq.com/og/img/${recipeId}.png`;
+        // Also update image_url in DB with permanent URL
+        await db.execute('UPDATE recipe_history SET image_url = ? WHERE id = ?', [finalImgUrl, recipeId]);
+        console.log('Permanent image URL saved:', finalImgUrl);
+      } catch(e) {
+        console.log('Image store error:', e.message);
       }
     }
-
-    if (!finalImgUrl) finalImgUrl = 'https://mealwheeliq.com/icons/icon-512.png';
 
     // Build OG HTML with permanent image URL
     const html = `<!DOCTYPE html>
@@ -906,9 +883,11 @@ app.post('/recipe/:id/og-page', authMiddleware, async (req, res) => {
   <meta property="og:title" content="${title}">
   <meta property="og:description" content="${desc}">
   <meta property="og:image" content="${finalImgUrl}">
-  <meta property="og:image:width" content="1024">
-  <meta property="og:image:height" content="1024">
+  <meta property="og:image:secure_url" content="${finalImgUrl}">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
   <meta property="og:image:type" content="image/png">
+  <meta property="og:image:alt" content="${r.recipe_name} — made with MealWheelIQ">
   <meta property="og:url" content="${ogUrl}">
   <meta property="og:type" content="article">
   <meta property="og:site_name" content="MealWheelIQ - AI Dinner Planning">
