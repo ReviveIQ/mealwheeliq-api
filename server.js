@@ -816,29 +816,82 @@ app.post('/recipe/:id/generate-image', authMiddleware, async (req, res) => {
 
     const prompt = `Professional food photography of ${r.recipe_name}, ${r.style || 'home-cooked'} style. Overhead shot on a rustic wooden table, natural window lighting, beautifully plated and garnished, appetizing and magazine-quality. No text, no watermarks, photorealistic.`;
 
-    // Try gpt-image-1 (latest) first, fall back to dall-e-2
-    let response;
+    // Try gpt-image-1 first (returns base64), fall back to dall-e-2 (returns URL)
+    let imageBase64 = null;
+    let imageTempUrl = null;
     try {
-      response = await openai.images.generate({
+      const resp1 = await openai.images.generate({
         model: 'gpt-image-1',
         prompt,
         n: 1,
         size: '1024x1024',
-        quality: 'medium'
+        quality: 'medium',
+        response_format: 'b64_json'
       });
+      imageBase64 = resp1.data[0].b64_json;
+      console.log('Image generated with gpt-image-1');
     } catch(e) {
       console.log('gpt-image-1 unavailable, trying dall-e-2:', e.message);
-      response = await openai.images.generate({
+      const resp2 = await openai.images.generate({
         model: 'dall-e-2',
         prompt,
         n: 1,
-        size: '1024x1024'
+        size: '1024x1024',
+        response_format: 'b64_json'
       });
+      imageBase64 = resp2.data[0].b64_json;
+      console.log('Image generated with dall-e-2');
     }
 
-    // gpt-image-1 returns base64, dall-e-2 returns URL
-    const imageUrl = response.data[0].url || 
-      `data:image/png;base64,${response.data[0].b64_json}`;
+    // Store image permanently in GitHub Pages immediately (avoids expiry issues)
+    const https = require('https');
+    const ghToken = process.env.GITHUB_TOKEN || process.env.GITHUB_PAT;
+    let imageUrl = null;
+
+    if (imageBase64 && ghToken) {
+      const imgPath = `og/img/${recipeId}.png`;
+      const imgApiUrl = `https://api.github.com/repos/ReviveIQ/mealwheeliq/contents/${imgPath}`;
+      
+      const ghReq = (method, url, body) => new Promise((resolve, reject) => {
+        const parsed = new URL(url);
+        const data = body ? JSON.stringify(body) : null;
+        const opts = {
+          hostname: parsed.hostname, path: parsed.pathname, method,
+          headers: {
+            'Authorization': `Bearer ${ghToken}`, 'Accept': 'application/vnd.github.v3+json',
+            'User-Agent': 'MealWheelIQ/1.0',
+            ...(data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {})
+          }
+        };
+        const req = https.request(opts, r => {
+          let buf = ''; r.on('data', c => buf += c);
+          r.on('end', () => { try { resolve({ status: r.statusCode, data: JSON.parse(buf) }); } catch(e) { resolve({ status: r.statusCode, data: buf }); }});
+        });
+        req.on('error', reject);
+        if (data) req.write(data);
+        req.end();
+      });
+
+      try {
+        let sha = null;
+        const chk = await ghReq('GET', imgApiUrl, null);
+        if (chk.status === 200) sha = chk.data.sha;
+        const body = { message: `img: recipe ${recipeId} food photo`, content: imageBase64 };
+        if (sha) body.sha = sha;
+        const result = await ghReq('PUT', imgApiUrl, body);
+        if (result.status === 200 || result.status === 201) {
+          imageUrl = `https://mealwheeliq.com/og/img/${recipeId}.png`;
+          // Update DB with permanent URL
+          await db.execute('UPDATE recipe_history SET image_url = ? WHERE id = ? AND user_id = ?', [imageUrl, recipeId, req.user.userId]);
+          console.log('Image stored permanently:', imageUrl);
+        }
+      } catch(imgErr) {
+        console.log('Image store to GitHub error:', imgErr.message);
+      }
+    }
+
+    // Fallback if GitHub storage failed
+    if (!imageUrl) imageUrl = `data:image/png;base64,${imageBase64}`;
 
     // Cache the image URL in the recipe record
     await db.execute(
