@@ -778,11 +778,18 @@ app.post('/webhook', async (req, res) => {
 
 // ─── PUBLIC RECIPE PAGE ──────────────────────────────────────────────────────
 
-// GET /recipe/:id — public recipe data for shared recipe pages (no auth needed)
+// GET /recipe/:id — public recipe data (JSON for app use)
 app.get('/recipe/:id', async (req, res) => {
+  // If Facebook/social crawler — serve pre-rendered HTML with OG tags
+  const ua = req.headers['user-agent'] || '';
+  const isCrawler = /facebookexternalhit|Facebot|Twitterbot|LinkedInBot|Slackbot|WhatsApp|TelegramBot|Discordbot/i.test(ua);
+  if (isCrawler) {
+    return serveRecipeOG(req, res);
+  }
+  // Normal JSON response for the app
   try {
     const [rows] = await db.execute(
-      'SELECT id, recipe_name, emoji, time, difficulty, style, calories_per_serving, protein_g, carbs_g, fat_g, ingredients, steps, nutrition_source FROM recipe_history WHERE id = ? AND saved = 1',
+      'SELECT id, recipe_name, emoji, time, difficulty, style, calories_per_serving, protein_g, carbs_g, fat_g, ingredients, steps FROM recipe_history WHERE id = ? AND saved = 1',
       [req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Recipe not found' });
@@ -797,6 +804,51 @@ app.get('/recipe/:id', async (req, res) => {
     res.status(500).json({ error: 'Failed to load recipe' });
   }
 });
+
+// Helper: serve pre-rendered HTML with Open Graph tags for social crawlers
+async function serveRecipeOG(req, res) {
+  try {
+    const [rows] = await db.execute(
+      'SELECT id, recipe_name, emoji, time, difficulty, style, calories_per_serving, protein_g, carbs_g, fat_g, ingredients FROM recipe_history WHERE id = ? AND saved = 1',
+      [req.params.id]
+    );
+    if (!rows.length) return res.status(404).send('<html><body>Recipe not found</body></html>');
+    const r = rows[0];
+    const ings = typeof r.ingredients === 'string' ? JSON.parse(r.ingredients || '[]') : (r.ingredients || []);
+    const top3 = ings.slice(0, 3).map(i => i.name).join(', ');
+    const more = ings.length > 3 ? ` + ${ings.length - 3} more` : '';
+    const title = `${r.emoji || '🍽️'} ${r.recipe_name} — MealWheelIQ`;
+    const desc = `${r.recipe_name}: ${top3}${more}. ⏱ ${r.time} · ${r.calories_per_serving} kcal · Spun on MealWheelIQ — spin your own free recipe at mealwheeliq.com`;
+    const pageUrl = `https://mealwheeliq.com/recipe.html?id=${r.id}`;
+    const imgUrl = `https://mealwheeliq.com/icons/icon-512.png`;
+
+    res.setHeader('Content-Type', 'text/html');
+    res.send(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>${title}</title>
+  <meta property="og:title" content="${title}">
+  <meta property="og:description" content="${desc}">
+  <meta property="og:image" content="${imgUrl}">
+  <meta property="og:url" content="${pageUrl}">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="MealWheelIQ">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="${title}">
+  <meta name="twitter:description" content="${desc}">
+  <meta name="twitter:image" content="${imgUrl}">
+  <meta http-equiv="refresh" content="0;url=${pageUrl}">
+</head>
+<body>
+  <p>Redirecting to <a href="${pageUrl}">${r.recipe_name} on MealWheelIQ</a>...</p>
+</body>
+</html>`);
+  } catch(e) {
+    console.error('OG render error:', e);
+    res.status(500).send('<html><body>Error loading recipe</body></html>');
+  }
+}
 
 // ─── QUICKSPIN — ONE-TIME PURCHASE ───────────────────────────────────────────
 
