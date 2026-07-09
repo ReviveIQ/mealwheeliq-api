@@ -821,8 +821,7 @@ app.post('/recipe/:id/generate-image', authMiddleware, async (req, res) => {
       prompt,
       n: 1,
       size: '1024x1024',
-      quality: 'standard',
-      style: 'natural'
+      quality: 'standard'
     });
 
     const imageUrl = response.data[0].url;
