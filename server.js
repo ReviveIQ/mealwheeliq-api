@@ -881,61 +881,38 @@ app.post('/recipe/:id/og-page', authMiddleware, async (req, res) => {
 </html>`;
 
     // Push to GitHub Pages via API
-    const ghToken = process.env.GITHUB_TOKEN || process.env.GITHUB_PAT;
-    console.log('OG page: token present?', !!ghToken, '| recipe:', r.recipe_name);
+    const token = process.env.GITHUB_TOKEN || process.env.GITHUB_PAT;
+    if (token) {
+      const path = `og/${recipeId}.html`;
+      const apiUrl = `https://api.github.com/repos/ReviveIQ/mealwheeliq/contents/${path}`;
 
-    if (ghToken) {
-      const ghPath = `og/${recipeId}.html`;
-      const ghApiUrl = `https://api.github.com/repos/ReviveIQ/mealwheeliq/contents/${ghPath}`;
-
-      // Use https module — always available in Node, no fetch polyfill needed
-      const https = require('https');
-
-      const ghRequest = (method, url, body, token) => new Promise((resolve, reject) => {
-        const parsed = new URL(url);
-        const data = body ? JSON.stringify(body) : null;
-        const options = {
-          hostname: parsed.hostname,
-          path: parsed.pathname,
-          method,
-          headers: {
-            'Authorization': `token ${token}`,
-            'Accept': 'application/vnd.github.v3+json',
-            'User-Agent': 'MealWheelIQ/1.0',
-            ...(data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {})
-          }
-        };
-        const req = https.request(options, res => {
-          let buf = '';
-          res.on('data', c => buf += c);
-          res.on('end', () => {
-            try { resolve({ status: res.statusCode, data: JSON.parse(buf) }); }
-            catch(e) { resolve({ status: res.statusCode, data: buf }); }
-          });
-        });
-        req.on('error', reject);
-        if (data) req.write(data);
-        req.end();
-      });
-
-      // Check if file exists for SHA
+      // Check if file exists to get SHA
       let sha = null;
       try {
-        const check = await ghRequest('GET', ghApiUrl, null, ghToken);
-        if (check.status === 200 && check.data.sha) sha = check.data.sha;
-      } catch(e) { console.log('OG SHA check error:', e.message); }
+        const checkResp = await fetch(apiUrl, {
+          headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.github.v3+json' }
+        });
+        if (checkResp.ok) {
+          const existing = await checkResp.json();
+          sha = existing.sha;
+        }
+      } catch(e) {}
 
-      // Push file
-      const pushBody = {
+      const body = {
         message: `feat: OG page for recipe ${recipeId} — ${r.recipe_name}`,
         content: Buffer.from(html).toString('base64')
       };
-      if (sha) pushBody.sha = sha;
+      if (sha) body.sha = sha;
 
-      const pushResult = await ghRequest('PUT', ghApiUrl, pushBody, ghToken);
-      console.log('OG page push result:', pushResult.status, pushResult.data?.commit?.sha?.slice(0,7) || pushResult.data?.message || '');
-    } else {
-      console.log('OG page: no GitHub token set — skipping push');
+      await fetch(apiUrl, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/vnd.github.v3+json'
+        },
+        body: JSON.stringify(body)
+      });
     }
 
     res.json({ pageUrl: ogUrl });
