@@ -849,30 +849,41 @@ app.post('/recipe/:id/og-page', authMiddleware, async (req, res) => {
     const ogUrl = `https://mealwheeliq.com/og/${recipeId}.html`;
 
     // Download DALL-E image and store permanently in GitHub (DALL-E URLs expire in ~1hr)
-    let finalImgUrl = 'https://mealwheeliq.com/icons/icon-512.png';
-    if (ghToken && imageUrl && imageUrl.startsWith('http')) {
+    // Check DB for cached image URL first
+    let finalImgUrl = r.image_url || null;
+
+    // Fetch food photo from Unsplash (free, no account needed, high quality)
+    if (!finalImgUrl) {
       try {
-        const imgBuf = await new Promise((resolve, reject) => {
-          https.get(imageUrl, res => {
-            const chunks = [];
-            res.on('data', c => chunks.push(c));
-            res.on('end', () => resolve(Buffer.concat(chunks)));
-            res.on('error', reject);
-          });
+        const searchQuery = encodeURIComponent(r.recipe_name + ' food');
+        const unsplashUrl = `https://source.unsplash.com/1200x630/?${searchQuery}`;
+        // source.unsplash.com redirects to a real image — follow the redirect to get final URL
+        const imgUrl = await new Promise((resolve, reject) => {
+          https.get(unsplashUrl, { headers: { 'User-Agent': 'MealWheelIQ/1.0' } }, res => {
+            if (res.statusCode === 302 || res.statusCode === 301) {
+              resolve(res.headers.location);
+            } else if (res.statusCode === 200) {
+              resolve(unsplashUrl);
+            } else {
+              reject(new Error('Unsplash returned ' + res.statusCode));
+            }
+            res.destroy();
+          }).on('error', reject);
         });
-        await ghPush(
-          `og/img/${recipeId}.png`,
-          imgBuf.toString('base64'),
-          `img: recipe ${recipeId} photo`
-        );
-        finalImgUrl = `https://mealwheeliq.com/og/img/${recipeId}.png`;
-        // Also update image_url in DB with permanent URL
-        await db.execute('UPDATE recipe_history SET image_url = ? WHERE id = ?', [finalImgUrl, recipeId]);
-        console.log('Permanent image URL saved:', finalImgUrl);
+
+        if (imgUrl && imgUrl.startsWith('http')) {
+          finalImgUrl = imgUrl;
+          // Cache in DB so next share is instant
+          await db.execute('UPDATE recipe_history SET image_url = ? WHERE id = ?', [finalImgUrl, recipeId]);
+          console.log('Unsplash image found:', finalImgUrl.slice(0, 80));
+        }
       } catch(e) {
-        console.log('Image store error:', e.message);
+        console.log('Unsplash lookup skipped:', e.message);
       }
     }
+
+    // Final fallback — MealWheelIQ branded card
+    if (!finalImgUrl) finalImgUrl = 'https://mealwheeliq.com/icons/icon-512.png';
 
     // Build OG HTML with permanent image URL
     const html = `<!DOCTYPE html>
