@@ -816,16 +816,29 @@ app.post('/recipe/:id/generate-image', authMiddleware, async (req, res) => {
 
     const prompt = `Professional food photography of ${r.recipe_name}, ${r.style || 'home-cooked'} style. Overhead shot on a rustic wooden table, natural window lighting, beautifully plated and garnished, appetizing and magazine-quality. No text, no watermarks, photorealistic.`;
 
-    const response = await openai.images.generate({
-      model: 'dall-e-3',
-      prompt,
-      n: 1,
-      size: '1024x1024',
-      quality: 'standard',
-      style: 'natural'
-    });
+    // Try gpt-image-1 (latest) first, fall back to dall-e-2
+    let response;
+    try {
+      response = await openai.images.generate({
+        model: 'gpt-image-1',
+        prompt,
+        n: 1,
+        size: '1024x1024',
+        quality: 'medium'
+      });
+    } catch(e) {
+      console.log('gpt-image-1 unavailable, trying dall-e-2:', e.message);
+      response = await openai.images.generate({
+        model: 'dall-e-2',
+        prompt,
+        n: 1,
+        size: '1024x1024'
+      });
+    }
 
-    const imageUrl = response.data[0].url;
+    // gpt-image-1 returns base64, dall-e-2 returns URL
+    const imageUrl = response.data[0].url || 
+      `data:image/png;base64,${response.data[0].b64_json}`;
 
     // Cache the image URL in the recipe record
     await db.execute(
