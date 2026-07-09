@@ -776,6 +776,28 @@ app.post('/webhook', async (req, res) => {
 });
 
 
+// ─── PUBLIC RECIPE PAGE ──────────────────────────────────────────────────────
+
+// GET /recipe/:id — public recipe data for shared recipe pages (no auth needed)
+app.get('/recipe/:id', async (req, res) => {
+  try {
+    const [rows] = await db.execute(
+      'SELECT id, recipe_name, emoji, time, difficulty, style, calories_per_serving, protein_g, carbs_g, fat_g, ingredients, steps, nutrition_source FROM recipe_history WHERE id = ? AND saved = 1',
+      [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Recipe not found' });
+    const r = rows[0];
+    res.json({
+      ...r,
+      ingredients: typeof r.ingredients === 'string' ? JSON.parse(r.ingredients || '[]') : (r.ingredients || []),
+      steps: typeof r.steps === 'string' ? JSON.parse(r.steps || '[]') : (r.steps || [])
+    });
+  } catch(e) {
+    console.error('Public recipe error:', e);
+    res.status(500).json({ error: 'Failed to load recipe' });
+  }
+});
+
 // ─── QUICKSPIN — ONE-TIME PURCHASE ───────────────────────────────────────────
 
 const { Resend } = (() => {
