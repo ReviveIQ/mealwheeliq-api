@@ -299,6 +299,46 @@ app.post('/auth/signup', async (req, res) => {
   }
 });
 
+// POST /auth/facebook — Facebook OAuth login/signup
+app.post('/auth/facebook', async (req, res) => {
+  const { fbId, accessToken, name, email } = req.body;
+  if (!fbId || !accessToken) return res.status(400).json({ error: 'Missing Facebook credentials' });
+  try {
+    const https = require('https');
+    const fbVerify = await new Promise((resolve) => {
+      https.get(`https://graph.facebook.com/me?access_token=${accessToken}&fields=id,email,name`, r => {
+        let buf = ''; r.on('data', c => buf += c);
+        r.on('end', () => { try { resolve(JSON.parse(buf)); } catch(e) { resolve({}); }});
+      }).on('error', () => resolve({}));
+    });
+    if (fbVerify.id !== fbId) return res.status(401).json({ error: 'Invalid Facebook token' });
+
+    const userEmail = email || fbVerify.email || `fb_${fbId}@mealwheeliq.com`;
+    const userName = (name || fbVerify.name || 'Chef').split(' ')[0];
+
+    let [users] = await db.execute('SELECT * FROM users WHERE email = ?', [userEmail]);
+    let userId;
+    if (users.length) {
+      userId = users[0].id;
+    } else {
+      const [result] = await db.execute(
+        'INSERT INTO users (email, password_hash) VALUES (?, ?)',
+        [userEmail, await bcrypt.hash(fbId + process.env.JWT_SECRET, 10)]
+      );
+      userId = result.insertId;
+      await db.execute('INSERT INTO subscriptions (user_id, plan, status) VALUES (?, "free", "active")', [userId]);
+      await db.execute('INSERT INTO user_preferences (user_id, daily_calorie_goal, servings, chef_name) VALUES (?, 2000, 2, ?)', [userId, userName + "'s Chef"]);
+    }
+    const [subs] = await db.execute('SELECT plan FROM subscriptions WHERE user_id = ?', [userId]);
+    const plan = subs[0]?.plan || 'free';
+    const token = jwt.sign({ userId, email: userEmail }, process.env.JWT_SECRET, { expiresIn: '30d' });
+    res.json({ token, email: userEmail, plan, name: userName });
+  } catch(e) {
+    console.error('Facebook auth error:', e);
+    res.status(500).json({ error: 'Authentication failed' });
+  }
+});
+
 app.post('/auth/login', async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
@@ -564,6 +604,50 @@ app.put('/history/:id/save', authMiddleware, async (req, res) => {
     [req.params.id, req.user.userId]
   );
   res.json({ success: true });
+
+  // Auto-post to MealWheelIQ Facebook Page in background
+  if (process.env.FB_PAGE_TOKEN) {
+    setImmediate(async () => {
+      try {
+        const [recipes] = await db.execute(
+          'SELECT recipe_name, emoji, time, calories_per_serving, image_url FROM recipe_history WHERE id = ?',
+          [req.params.id]
+        );
+        if (!recipes.length) return;
+        const r = recipes[0];
+        const imgUrl = r.image_url && r.image_url.includes('pexels.com') ? r.image_url : null;
+        const recipeUrl = `https://mealwheeliq.com/recipe.html?id=${req.params.id}`;
+        const message = `${r.emoji || '🍽️'} ${r.recipe_name}\n\n⏱ ${r.time || '30 min'} · 🔥 ${r.calories_per_serving} kcal/serving\n\nSpun on MealWheelIQ — your personal AI chef builds dinner from what's already in your fridge.\n\n👉 Try it free at mealwheeliq.com 🎰`;
+        const pageId = process.env.FB_PAGE_ID || '61591664615764';
+        const https = require('https');
+
+        const fbPost = (path, data) => new Promise((resolve) => {
+          const body = new URLSearchParams({ ...data, access_token: process.env.FB_PAGE_TOKEN }).toString();
+          const req2 = https.request({
+            hostname: 'graph.facebook.com',
+            path: `/v25.0/${pageId}/${path}`,
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) }
+          }, res2 => {
+            let buf = ''; res2.on('data', c => buf += c);
+            res2.on('end', () => resolve(JSON.parse(buf)));
+          });
+          req2.on('error', () => resolve({}));
+          req2.write(body); req2.end();
+        });
+
+        let result;
+        if (imgUrl) {
+          result = await fbPost('photos', { url: imgUrl, caption: message });
+        } else {
+          result = await fbPost('feed', { message, link: recipeUrl });
+        }
+        console.log('FB Page post:', result.id ? '✅ posted ' + result.id : JSON.stringify(result).slice(0,100));
+      } catch(e) {
+        console.log('FB auto-post error:', e.message);
+      }
+    });
+  }
 });
 
 // ─── FAVORITES ───────────────────────────────────────────────────────────────
