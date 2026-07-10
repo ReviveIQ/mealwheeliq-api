@@ -995,10 +995,33 @@ app.post('/recipe/:id/og-page', authMiddleware, async (req, res) => {
             const aiImgUrl = `data:image/png;base64,${b64.slice(0,100)}`; // placeholder check
             // Actually store on Pexels CDN isn't possible — use GitHub but check size
             const imgBuffer = Buffer.from(b64, 'base64');
-            console.log('AI image size:', Math.round(imgBuffer.length/1024), 'KB');
-            if (imgBuffer.length < 900000) { // under 900KB — safe for GitHub Pages
-              await ghPush(`og/img/${recipeId}.png`, b64, `img: AI food photo for recipe ${recipeId}`);
-              const aiUrl = `https://mealwheeliq.com/og/img/${recipeId}.png`;
+            const sizeKB = Math.round(imgBuffer.length/1024);
+            console.log('AI image size:', sizeKB, 'KB');
+
+            // Compress using sharp if available, otherwise use canvas resize trick
+            let finalB64 = b64;
+            let finalBuffer = imgBuffer;
+            
+            // Convert PNG to JPEG to reduce size dramatically (PNG 2MB → JPEG ~200KB)
+            try {
+              const sharp = require('sharp');
+              finalBuffer = await sharp(imgBuffer)
+                .resize(1200, 630, { fit: 'cover', position: 'centre' })
+                .jpeg({ quality: 85, progressive: true })
+                .toBuffer();
+              finalB64 = finalBuffer.toString('base64');
+              console.log('Compressed to JPEG:', Math.round(finalBuffer.length/1024), 'KB');
+            } catch(sharpErr) {
+              // sharp not available — skip AI image, keep Pexels
+              console.log('sharp not available, keeping Pexels image');
+              return;
+            }
+
+            if (finalBuffer.length < 900000) { // under 900KB — safe for GitHub Pages
+              const imgPath = `og/img/${recipeId}.jpg`;
+              await ghPush(imgPath, finalB64, `img: AI food photo for recipe ${recipeId}`);
+              const aiUrl = `https://mealwheeliq.com/og/img/${recipeId}.jpg`;
+
               await db.execute('UPDATE recipe_history SET image_url = ? WHERE id = ?', [aiUrl, recipeId]);
               // Update OG page with AI image
               const [recRows] = await db.execute('SELECT recipe_name, emoji, time, calories_per_serving, ingredients FROM recipe_history WHERE id = ?', [recipeId]);
