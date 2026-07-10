@@ -918,6 +918,7 @@ app.post('/recipe/:id/og-page', authMiddleware, async (req, res) => {
   <meta property="og:url" content="${ogUrl}">
   <meta property="og:type" content="article">
   <meta property="og:site_name" content="MealWheelIQ - AI Dinner Planning">
+  <meta property="fb:app_id" content="912238324473168">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="${title}">
   <meta name="twitter:description" content="${desc}">
