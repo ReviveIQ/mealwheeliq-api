@@ -948,43 +948,106 @@ app.post('/recipe/:id/og-page', authMiddleware, async (req, res) => {
       await db.execute('UPDATE recipe_history SET image_url = NULL WHERE id = ?', [recipeId]);
     }
 
-    // Keyword-based food images from Pexels CDN — reliable, no API needed
-    if (!finalImgUrl) {
-      const kw = (r.recipe_name || '').toLowerCase();
-      const imgMap = [
-        ['ribeye',     'https://images.pexels.com/photos/8522893/pexels-photo-8522893.jpeg?auto=compress&cs=tinysrgb&w=1200&h=630&fit=crop'],
-        ['steak',      'https://images.pexels.com/photos/8522893/pexels-photo-8522893.jpeg?auto=compress&cs=tinysrgb&w=1200&h=630&fit=crop'],
-        ['beef',       'https://images.pexels.com/photos/8522893/pexels-photo-8522893.jpeg?auto=compress&cs=tinysrgb&w=1200&h=630&fit=crop'],
-        ['lamb',       'https://images.pexels.com/photos/8522893/pexels-photo-8522893.jpeg?auto=compress&cs=tinysrgb&w=1200&h=630&fit=crop'],
-        ['burger',     'https://images.pexels.com/photos/1639562/pexels-photo-1639562.jpeg?auto=compress&cs=tinysrgb&w=1200&h=630&fit=crop'],
-        ['chicken',    'https://images.pexels.com/photos/106343/pexels-photo-106343.jpeg?auto=compress&cs=tinysrgb&w=1200&h=630&fit=crop'],
-        ['turkey',     'https://images.pexels.com/photos/106343/pexels-photo-106343.jpeg?auto=compress&cs=tinysrgb&w=1200&h=630&fit=crop'],
-        ['pork',       'https://images.pexels.com/photos/323682/pexels-photo-323682.jpeg?auto=compress&cs=tinysrgb&w=1200&h=630&fit=crop'],
-        ['tenderloin', 'https://images.pexels.com/photos/323682/pexels-photo-323682.jpeg?auto=compress&cs=tinysrgb&w=1200&h=630&fit=crop'],
-        ['salmon',     'https://images.pexels.com/photos/262959/pexels-photo-262959.jpeg?auto=compress&cs=tinysrgb&w=1200&h=630&fit=crop'],
-        ['fish',       'https://images.pexels.com/photos/262959/pexels-photo-262959.jpeg?auto=compress&cs=tinysrgb&w=1200&h=630&fit=crop'],
-        ['shrimp',     'https://images.pexels.com/photos/1640771/pexels-photo-1640771.jpeg?auto=compress&cs=tinysrgb&w=1200&h=630&fit=crop'],
-        ['seafood',    'https://images.pexels.com/photos/1640771/pexels-photo-1640771.jpeg?auto=compress&cs=tinysrgb&w=1200&h=630&fit=crop'],
-        ['pasta',      'https://images.pexels.com/photos/1279330/pexels-photo-1279330.jpeg?auto=compress&cs=tinysrgb&w=1200&h=630&fit=crop'],
-        ['noodle',     'https://images.pexels.com/photos/1279330/pexels-photo-1279330.jpeg?auto=compress&cs=tinysrgb&w=1200&h=630&fit=crop'],
-        ['soup',       'https://images.pexels.com/photos/539451/pexels-photo-539451.jpeg?auto=compress&cs=tinysrgb&w=1200&h=630&fit=crop'],
-        ['stew',       'https://images.pexels.com/photos/539451/pexels-photo-539451.jpeg?auto=compress&cs=tinysrgb&w=1200&h=630&fit=crop'],
-        ['chili',      'https://images.pexels.com/photos/539451/pexels-photo-539451.jpeg?auto=compress&cs=tinysrgb&w=1200&h=630&fit=crop'],
-        ['taco',       'https://images.pexels.com/photos/2087748/pexels-photo-2087748.jpeg?auto=compress&cs=tinysrgb&w=1200&h=630&fit=crop'],
-        ['stir fry',   'https://images.pexels.com/photos/1410235/pexels-photo-1410235.jpeg?auto=compress&cs=tinysrgb&w=1200&h=630&fit=crop'],
-        ['rice',       'https://images.pexels.com/photos/1410235/pexels-photo-1410235.jpeg?auto=compress&cs=tinysrgb&w=1200&h=630&fit=crop'],
-        ['salad',      'https://images.pexels.com/photos/1640777/pexels-photo-1640777.jpeg?auto=compress&cs=tinysrgb&w=1200&h=630&fit=crop'],
-        ['bowl',       'https://images.pexels.com/photos/1640777/pexels-photo-1640777.jpeg?auto=compress&cs=tinysrgb&w=1200&h=630&fit=crop'],
-      ];
-      for (const [key, url] of imgMap) {
-        if (kw.includes(key)) { finalImgUrl = url; break; }
-      }
-      if (!finalImgUrl) finalImgUrl = 'https://images.pexels.com/photos/1640777/pexels-photo-1640777.jpeg?auto=compress&cs=tinysrgb&w=1200&h=630&fit=crop';
-      await db.execute('UPDATE recipe_history SET image_url = ? WHERE id = ?', [finalImgUrl, recipeId]);
-      console.log('Keyword image set:', finalImgUrl.slice(0, 80));
+    // Step 1: Pexels API search with actual recipe name — fast, relevant, free
+    if (!finalImgUrl && process.env.PEXELS_API_KEY) {
+      try {
+        const searchTerm = encodeURIComponent(r.recipe_name.split(' ').slice(0,4).join(' '));
+        const pexelsResult = await new Promise((resolve) => {
+          const opts = {
+            hostname: 'api.pexels.com',
+            path: `/v1/search?query=${searchTerm}&per_page=1&orientation=landscape`,
+            headers: { 'Authorization': process.env.PEXELS_API_KEY, 'User-Agent': 'MealWheelIQ/1.0' }
+          };
+          https.get(opts, res => {
+            let buf = ''; res.on('data', c => buf += c);
+            res.on('end', () => { try { resolve(JSON.parse(buf)); } catch(e) { resolve(null); }});
+          }).on('error', () => resolve(null));
+        });
+        const photo = pexelsResult?.photos?.[0];
+        if (photo) {
+          finalImgUrl = photo.src.large2x || photo.src.large;
+          await db.execute('UPDATE recipe_history SET image_url = ? WHERE id = ?', [finalImgUrl, recipeId]);
+          console.log('Pexels search image:', finalImgUrl.slice(0, 80));
+        }
+      } catch(e) { console.log('Pexels search failed:', e.message); }
     }
 
-    // AI background image generation removed — using Pexels keyword images instead
+    // Fallback if Pexels fails
+    if (!finalImgUrl) {
+      finalImgUrl = 'https://images.pexels.com/photos/1640777/pexels-photo-1640777.jpeg?auto=compress&cs=tinysrgb&w=1200&h=630&fit=crop';
+      await db.execute('UPDATE recipe_history SET image_url = ? WHERE id = ?', [finalImgUrl, recipeId]);
+    }
+
+    // Step 2: gpt-image-1 custom AI photo in background — updates OG page when ready
+    if (process.env.OPENAI_API_KEY) {
+      setImmediate(async () => {
+        try {
+          console.log('Background: generating custom AI photo for', r.recipe_name);
+          const OpenAI = require('openai');
+          const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+          const prompt = `Professional food photography of ${r.recipe_name}. Overhead shot on a rustic wooden table, natural window lighting, beautifully plated with garnish, appetizing and magazine-quality. No text, photorealistic.`;
+          const imgResp = await openai.images.generate({ model: 'gpt-image-1', prompt, n: 1, size: '1024x1024' });
+          const b64 = imgResp.data[0].b64_json;
+          if (b64) {
+            // Store as PNG in GitHub — compress to stay under 1MB limit
+            // Use a smaller size by cropping the base64 to avoid Pages limit
+            // Store URL in DB and update OG page
+            const aiImgUrl = `data:image/png;base64,${b64.slice(0,100)}`; // placeholder check
+            // Actually store on Pexels CDN isn't possible — use GitHub but check size
+            const imgBuffer = Buffer.from(b64, 'base64');
+            console.log('AI image size:', Math.round(imgBuffer.length/1024), 'KB');
+            if (imgBuffer.length < 900000) { // under 900KB — safe for GitHub Pages
+              await ghPush(`og/img/${recipeId}.png`, b64, `img: AI food photo for recipe ${recipeId}`);
+              const aiUrl = `https://mealwheeliq.com/og/img/${recipeId}.png`;
+              await db.execute('UPDATE recipe_history SET image_url = ? WHERE id = ?', [aiUrl, recipeId]);
+              // Update OG page with AI image
+              const [recRows] = await db.execute('SELECT recipe_name, emoji, time, calories_per_serving, ingredients FROM recipe_history WHERE id = ?', [recipeId]);
+              if (recRows.length) {
+                const rec = recRows[0];
+                const ings = typeof rec.ingredients === 'string' ? JSON.parse(rec.ingredients || '[]') : (rec.ingredients || []);
+                const top3 = ings.slice(0,3).map(i=>i.name).join(', ');
+                const more = ings.length > 3 ? ` + ${ings.length-3} more` : '';
+                const title = `${rec.emoji||'🍽️'} ${rec.recipe_name} — MealWheelIQ`;
+                const desc = `${rec.recipe_name}: ${top3}${more}. ${rec.time||'30 min'} · ${rec.calories_per_serving} kcal · Spun on MealWheelIQ — get your own AI recipe free at mealwheeliq.com`;
+                const pageUrl = `https://mealwheeliq.com/recipe.html?id=${recipeId}`;
+                const ogUrl = `https://mealwheeliq.com/og/${recipeId}.html`;
+                const updatedHtml = `<!DOCTYPE html>
+<html prefix="og: http://ogp.me/ns#"><head>
+  <meta charset="UTF-8"><title>${title}</title>
+  <meta property="og:title" content="${title}">
+  <meta property="og:description" content="${desc}">
+  <meta property="og:image" content="${aiUrl}">
+  <meta property="og:image:secure_url" content="${aiUrl}">
+  <meta property="og:image:width" content="1024">
+  <meta property="og:image:height" content="1024">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:alt" content="${rec.recipe_name} — made with MealWheelIQ">
+  <meta property="og:url" content="${ogUrl}">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="MealWheelIQ - AI Dinner Planning">
+  <meta property="fb:app_id" content="912238324473168">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="${title}">
+  <meta name="twitter:description" content="${desc}">
+  <meta name="twitter:image" content="${aiUrl}">
+  <link rel="canonical" href="${pageUrl}">
+</head><body style="font-family:sans-serif;max-width:600px;margin:2rem auto;padding:1rem;text-align:center">
+  <h1>${rec.recipe_name}</h1><p>${desc}</p>
+  <a href="${pageUrl}" style="background:#C94B2A;color:white;padding:.75rem 2rem;border-radius:24px;text-decoration:none;font-weight:700;display:inline-block;margin-top:1rem">View full recipe on MealWheelIQ →</a>
+  <p style="color:#999;font-size:12px;margin-top:2rem"><a href="https://mealwheeliq.com" style="color:#C94B2A">MealWheelIQ</a> — Spin it. Cook it. Love it.</p>
+</body></html>`;
+                await ghPush(`og/${recipeId}.html`, Buffer.from(updatedHtml).toString('base64'), `img: update OG page with custom AI photo for recipe ${recipeId}`);
+                console.log('Background: OG page updated with AI photo for', rec.recipe_name);
+              }
+            } else {
+              console.log('Background: AI image too large for GitHub Pages (', Math.round(imgBuffer.length/1024), 'KB) — keeping Pexels image');
+            }
+          }
+        } catch(e) {
+          console.log('Background AI photo failed:', e.message);
+        }
+      });
+    }
 
     // Build OG HTML with permanent image URL
     const html = `<!DOCTYPE html>
