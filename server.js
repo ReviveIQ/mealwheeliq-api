@@ -908,10 +908,36 @@ app.post('/recipe/:id/og-page', authMiddleware, async (req, res) => {
   const ghPush = async (path, content, message) => {
     const url = `https://api.github.com/repos/ReviveIQ/mealwheeliq/contents/${path}`;
     let sha = null;
-    try { const c = await ghRequest('GET', url, null, ghToken); if (c.status === 200) sha = c.data.sha; } catch(e) {}
+
+    // Fetch existing SHA — required if file already exists
+    try {
+      const c = await ghRequest('GET', url, null, ghToken);
+      if (c.status === 200 && c.data?.sha) {
+        sha = c.data.sha;
+      }
+    } catch(e) {
+      console.log(`ghPush GET ${path}:`, e.message);
+    }
+
     const body = { message, content };
     if (sha) body.sha = sha;
+
     const result = await ghRequest('PUT', url, body, ghToken);
+
+    // If failed due to missing SHA (409 conflict), retry with fresh SHA
+    if (result.status === 409 || (result.data?.message || '').includes('sha')) {
+      console.log(`ghPush retry ${path} — fetching fresh SHA`);
+      try {
+        const c2 = await ghRequest('GET', url, null, ghToken);
+        if (c2.status === 200 && c2.data?.sha) {
+          body.sha = c2.data.sha;
+          const retry = await ghRequest('PUT', url, body, ghToken);
+          console.log(`GitHub push ${path} (retry):`, retry.status, retry.data?.commit?.sha?.slice(0,7) || retry.data?.message || '');
+          return retry;
+        }
+      } catch(e2) { console.log('ghPush retry error:', e2.message); }
+    }
+
     console.log(`GitHub push ${path}:`, result.status, result.data?.commit?.sha?.slice(0,7) || result.data?.message || '');
     return result;
   };
