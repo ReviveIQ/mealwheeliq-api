@@ -505,13 +505,28 @@ async function usdaLookup(ingredientName) {
   if (usdaCache.has(key)) return usdaCache.get(key);
   if (!process.env.USDA_API_KEY) return null;
 
+  // Terms that signal a concentrated/processed product — these are the
+  // usual source of blown-up macros (e.g. "onion" matching "onion powder,"
+  // which is ~20x denser than fresh onion). Skip these unless the
+  // ingredient itself asks for that form.
+  const processedTerms = ['powder', 'dehydrated', 'dried', 'concentrate', 'extract', 'isolate', 'flakes', 'granulated', 'bouillon'];
+  const ingredientImpliesProcessed = processedTerms.some(t => key.includes(t));
+
   try {
-    const url = `https://api.nal.usda.gov/fdc/v1/foods/search?query=${encodeURIComponent(key)}&dataType=Foundation,SR%20Legacy&pageSize=1&api_key=${process.env.USDA_API_KEY}`;
+    const url = `https://api.nal.usda.gov/fdc/v1/foods/search?query=${encodeURIComponent(key)}&dataType=Foundation,SR%20Legacy&pageSize=5&api_key=${process.env.USDA_API_KEY}`;
     const resp = await fetch(url);
     if (!resp.ok) { usdaCache.set(key, null); return null; }
     const data = await resp.json();
-    const food = data.foods?.[0];
-    if (!food) { usdaCache.set(key, null); return null; }
+    const candidates = data.foods || [];
+    if (!candidates.length) { usdaCache.set(key, null); return null; }
+
+    // Prefer the first candidate that isn't a processed/concentrated form,
+    // unless the ingredient itself calls for that form (e.g. "garlic powder")
+    let food = candidates.find(f => {
+      const desc = (f.description || '').toLowerCase();
+      const isProcessed = processedTerms.some(t => desc.includes(t));
+      return ingredientImpliesProcessed || !isProcessed;
+    }) || candidates[0];
 
     const getNutrient = (id) => food.foodNutrients?.find(n => n.nutrientId === id)?.value || 0;
     // Per 100g values — standard USDA nutrient IDs
