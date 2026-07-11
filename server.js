@@ -292,6 +292,16 @@ app.post('/auth/signup', async (req, res) => {
 
     const token = jwt.sign({ userId, email }, JWT_SECRET, { expiresIn: '30d' });
     res.json({ token, user: { id: userId, email, plan: 'free' } });
+
+    // Fire-and-forget notification — never blocks or breaks the signup response
+    if (resend) {
+      resend.emails.send({
+        from: process.env.RESEND_FROM || 'onboarding@resend.dev',
+        to: 'chef@mealwheeliq.com',
+        subject: '🎉 New MealWheelIQ signup',
+        text: `New user signed up.\n\nEmail: ${email}\nMethod: Email/Password\nUser ID: ${userId}\nTime: ${new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })}`
+      }).catch(e => console.error('Signup notify email failed:', e.message));
+    }
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') return res.status(400).json({ error: 'Email already registered' });
     console.error(err);
@@ -328,6 +338,16 @@ app.post('/auth/facebook', async (req, res) => {
       userId = result.insertId;
       await db.execute('INSERT INTO subscriptions (user_id, plan, status) VALUES (?, "free", "active")', [userId]);
       await db.execute('INSERT INTO user_preferences (user_id, daily_calorie_goal, servings, chef_name) VALUES (?, 2000, 2, ?)', [userId, userName + "'s Chef"]);
+
+      // Fire-and-forget notification — only for genuinely new users, never blocks response
+      if (resend) {
+        resend.emails.send({
+          from: process.env.RESEND_FROM || 'onboarding@resend.dev',
+          to: 'chef@mealwheeliq.com',
+          subject: '🎉 New MealWheelIQ signup',
+          text: `New user signed up.\n\nEmail: ${userEmail}\nName: ${userName}\nMethod: Facebook Login\nUser ID: ${userId}\nTime: ${new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })}`
+        }).catch(e => console.error('Signup notify email failed:', e.message));
+      }
     }
     const [subs] = await db.execute('SELECT plan FROM subscriptions WHERE user_id = ?', [userId]);
     const plan = subs[0]?.plan || 'free';
