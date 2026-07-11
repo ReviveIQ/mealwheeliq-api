@@ -672,7 +672,15 @@ Recipe steps must follow professional cookbook standards (America's Test Kitchen
         // the user actually has/buys, not pantry staples assumed always on hand
         const keyIngredients = (r.ingredients || []).filter(i => !i.buy || i.organic);
         const verified = await calculateVerifiedMacros(keyIngredients, servings);
-        if (verified) {
+        // Sanity guard: a bad USDA match (e.g. a spice matched to a concentrated
+        // processed product) can blow up totals. If verified numbers are wildly
+        // out of line with the AI's own estimate, trust the AI estimate instead
+        // of shipping a falsely "verified" but wrong number.
+        const aiEstimate = parseFloat(r.calories_per_serving) || 0;
+        const plausible = verified && aiEstimate > 0
+          ? (verified.calories_per_serving / aiEstimate) > 0.4 && (verified.calories_per_serving / aiEstimate) < 2.5
+          : !!verified;
+        if (verified && plausible) {
           r.calories_per_serving = verified.calories_per_serving;
           r.protein_g = verified.protein_g;
           r.carbs_g = verified.carbs_g;
