@@ -1329,6 +1329,22 @@ app.get('/admin/clear-images', adminAuth, async (req, res) => {
   }
 });
 
+// GET /admin/test-signup-email — fires the signup notification without creating a user
+app.get('/admin/test-signup-email', adminAuth, async (req, res) => {
+  if (!resend) return res.status(500).json({ error: 'Resend not configured — check RESEND_API_KEY' });
+  try {
+    const result = await resend.emails.send({
+      from: process.env.RESEND_FROM || 'onboarding@resend.dev',
+      to: 'chef@mealwheeliq.com',
+      subject: '🎉 [TEST] New MealWheelIQ signup',
+      text: `This is a test of the signup notification.\n\nfrom used: ${process.env.RESEND_FROM || 'onboarding@resend.dev'}\nTime: ${new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })}`
+    });
+    res.json({ sent: true, result });
+  } catch(e) {
+    res.status(500).json({ sent: false, error: e.message, details: e });
+  }
+});
+
 // GET /admin/users — list recent users
 app.get('/admin/users', adminAuth, async (req, res) => {
   try {
