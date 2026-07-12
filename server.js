@@ -1190,7 +1190,9 @@ app.post('/recipe/:id/og-page', authMiddleware, async (req, res) => {
     // Step 1: Pexels API search with actual recipe name — fast, relevant, free
     if (!finalImgUrl && process.env.PEXELS_API_KEY) {
       try {
-        const searchTerm = encodeURIComponent(r.recipe_name.split(' ').slice(0,4).join(' '));
+        const fillerWords = new Set(['with','and','over','in','on','a','the','of']);
+        const meaningfulWords = r.recipe_name.split(' ').filter(w => !fillerWords.has(w.toLowerCase()));
+        const searchTerm = encodeURIComponent(meaningfulWords.slice(0,6).join(' '));
         const pexelsResult = await new Promise((resolve) => {
           const opts = {
             hostname: 'api.pexels.com',
