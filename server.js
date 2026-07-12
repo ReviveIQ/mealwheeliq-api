@@ -205,6 +205,7 @@ async function createTables() {
     { sql: "ALTER TABLE recipe_history ADD COLUMN nutrition_source VARCHAR(50)", name: 'nutrition_source' },
     { sql: "ALTER TABLE recipe_history ADD COLUMN image_url TEXT", name: 'image_url' },
     { sql: "ALTER TABLE recipe_history ADD COLUMN fiber_g DECIMAL(5,1)", name: 'fiber_g' },
+    { sql: "ALTER TABLE subscriptions ADD COLUMN is_promo BOOLEAN DEFAULT FALSE", name: 'is_promo' },
   ];
 
   for (const m of migrations) {
@@ -273,12 +274,30 @@ app.get('/', (req, res) => {
 });
 
 // ─── AUTH ROUTES ─────────────────────────────────────────────────────────────
+// First-100-signups promo — auto-upgrades early users to Home Chef for free.
+// Counts total users; if under the cap, the new signup qualifies.
+const PROMO_SIGNUP_CAP = 100;
+async function getPromoPlan() {
+  try {
+    const [rows] = await db.execute('SELECT COUNT(*) as count FROM users');
+    const currentCount = rows[0].count;
+    // currentCount is the count BEFORE this new user is inserted, so
+    // currentCount < cap means this new signup will be #(currentCount+1),
+    // i.e. still within the first 100.
+    return currentCount < PROMO_SIGNUP_CAP ? 'home_chef' : 'free';
+  } catch (e) {
+    console.error('Promo check failed, defaulting to free:', e.message);
+    return 'free';
+  }
+}
+
 app.post('/auth/signup', async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
   if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
 
   try {
+    const promoPlan = await getPromoPlan();
     const hash = await bcrypt.hash(password, 12);
     const [result] = await db.execute(
       'INSERT INTO users (email, password_hash) VALUES (?, ?)',
@@ -286,12 +305,15 @@ app.post('/auth/signup', async (req, res) => {
     );
     const userId = result.insertId;
 
-    // Create free subscription and default preferences
-    await db.execute('INSERT INTO subscriptions (user_id, plan, status) VALUES (?, "free", "active")', [userId]);
+    // Create subscription (promo Home Chef for first 100 users, free otherwise) and default preferences
+    await db.execute(
+      'INSERT INTO subscriptions (user_id, plan, status, is_promo) VALUES (?, ?, "active", ?)',
+      [userId, promoPlan, promoPlan === 'home_chef']
+    );
     await db.execute('INSERT INTO user_preferences (user_id) VALUES (?)', [userId]);
 
     const token = jwt.sign({ userId, email }, JWT_SECRET, { expiresIn: '30d' });
-    res.json({ token, user: { id: userId, email, plan: 'free' } });
+    res.json({ token, user: { id: userId, email, plan: promoPlan } });
 
     // Fire-and-forget notification — never blocks or breaks the signup response
     if (resend) {
@@ -331,12 +353,16 @@ app.post('/auth/facebook', async (req, res) => {
     if (users.length) {
       userId = users[0].id;
     } else {
+      const promoPlan = await getPromoPlan();
       const [result] = await db.execute(
         'INSERT INTO users (email, password_hash) VALUES (?, ?)',
         [userEmail, await bcrypt.hash(fbId + process.env.JWT_SECRET, 10)]
       );
       userId = result.insertId;
-      await db.execute('INSERT INTO subscriptions (user_id, plan, status) VALUES (?, "free", "active")', [userId]);
+      await db.execute(
+        'INSERT INTO subscriptions (user_id, plan, status, is_promo) VALUES (?, ?, "active", ?)',
+        [userId, promoPlan, promoPlan === 'home_chef']
+      );
       await db.execute('INSERT INTO user_preferences (user_id, daily_calorie_goal, servings, chef_name) VALUES (?, 2000, 2, ?)', [userId, userName + "'s Chef"]);
 
       // Fire-and-forget notification — only for genuinely new users, never blocks response
