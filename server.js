@@ -1648,8 +1648,7 @@ app.get('/admin/delete-users', adminAuth, async (req, res) => {
   }
 });
 
-// GET /admin/clear-cookbook?userId=X — wipes one user's recipe history/cookbook
-// (and anything referencing those recipes) without touching their account,
+// GET /admin/clear-cookbook?userId=X — wipes one user's recipe history/cookbook// (and anything referencing those recipes) without touching their account,
 // subscription, or preferences.
 app.get('/admin/clear-cookbook', adminAuth, async (req, res) => {
   const userId = parseInt(req.query.userId);
