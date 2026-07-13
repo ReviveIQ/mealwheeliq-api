@@ -194,6 +194,20 @@ async function createTables() {
     )
   `);
 
+  // 3-Day Plan — a lightweight rolling grocery-list builder, capped at 3
+  // recipes so groceries stay fresh (distinct from the 5-day week planner)
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS three_day_plan (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      recipe_id INT NOT NULL,
+      added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id),
+      FOREIGN KEY (recipe_id) REFERENCES recipe_history(id),
+      UNIQUE KEY unique_user_recipe (user_id, recipe_id)
+    )
+  `);
+
   // ── Migrations — safe to run on every boot, errors mean column exists ────────
   const migrations = [
     { sql: "ALTER TABLE user_preferences ADD COLUMN chef_name VARCHAR(50) DEFAULT 'Chef'", name: 'chef_name' },
@@ -971,6 +985,44 @@ app.get('/profiles', authMiddleware, async (req, res) => {
     [req.user.userId]
   );
   res.json(rows);
+});
+
+// ─── 3-DAY PLAN — lightweight grocery list builder, capped at 3 recipes ─────
+app.post('/threeday/add', authMiddleware, async (req, res) => {
+  const plan = await getUserPlan(req.user.userId);
+  if (plan === 'free') return res.status(403).json({ error: 'Home Chef plan required for the 3-Day Plan feature.' });
+
+  const { recipeId } = req.body;
+  if (!recipeId) return res.status(400).json({ error: 'recipeId required' });
+
+  try {
+    const [existing] = await db.execute('SELECT id FROM three_day_plan WHERE user_id = ?', [req.user.userId]);
+    if (existing.length >= 3) {
+      return res.status(400).json({ error: 'Your 3-Day Plan is full (3 recipes max) — remove one first.', full: true });
+    }
+    await db.execute('INSERT INTO three_day_plan (user_id, recipe_id) VALUES (?, ?)', [req.user.userId, recipeId]);
+    res.json({ success: true, count: existing.length + 1 });
+  } catch (e) {
+    if (e.code === 'ER_DUP_ENTRY') return res.status(400).json({ error: 'That recipe is already in your 3-Day Plan.' });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/threeday/remove/:recipeId', authMiddleware, async (req, res) => {
+  await db.execute('DELETE FROM three_day_plan WHERE user_id = ? AND recipe_id = ?', [req.user.userId, req.params.recipeId]);
+  res.json({ success: true });
+});
+
+app.get('/threeday', authMiddleware, async (req, res) => {
+  const [rows] = await db.execute(
+    `SELECT rh.id, rh.recipe_name, rh.emoji, rh.ingredients, rh.time, rh.difficulty
+     FROM three_day_plan tdp
+     JOIN recipe_history rh ON rh.id = tdp.recipe_id
+     WHERE tdp.user_id = ?
+     ORDER BY tdp.added_at ASC`,
+    [req.user.userId]
+  );
+  res.json(rows.map(r => ({ ...r, ingredients: JSON.parse(r.ingredients || '[]') })));
 });
 
 app.post('/profiles', authMiddleware, async (req, res) => {
