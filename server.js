@@ -208,6 +208,21 @@ async function createTables() {
     )
   `);
 
+  // ── Usage events — general-purpose log for analytics/usage stats ────────────
+  // event_type examples: 'signup', 'spin', 'soup_spin', 'week_spin', 'pantry_scan',
+  // 'share', 'favorite_add', 'three_day_plan_add', 'upgrade'
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS user_events (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT,
+      event_type VARCHAR(50) NOT NULL,
+      event_data JSON,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_user_event (user_id, event_type),
+      INDEX idx_event_created (event_type, created_at)
+    )
+  `);
+
   // ── Migrations — safe to run on every boot, errors mean column exists ────────
   const migrations = [
     { sql: "ALTER TABLE user_preferences ADD COLUMN chef_name VARCHAR(50) DEFAULT 'Chef'", name: 'chef_name' },
@@ -305,6 +320,18 @@ async function getPromoPlan() {
   }
 }
 
+// Logs a usage event for analytics — never throws, never blocks the caller
+async function logEvent(userId, eventType, data = {}) {
+  try {
+    await db.execute(
+      'INSERT INTO user_events (user_id, event_type, event_data) VALUES (?, ?, ?)',
+      [userId || null, eventType, JSON.stringify(data)]
+    );
+  } catch (e) {
+    console.error('logEvent failed:', eventType, e.message);
+  }
+}
+
 app.post('/auth/signup', async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
@@ -328,6 +355,8 @@ app.post('/auth/signup', async (req, res) => {
 
     const token = jwt.sign({ userId, email }, JWT_SECRET, { expiresIn: '30d' });
     res.json({ token, user: { id: userId, email, plan: promoPlan } });
+
+    logEvent(userId, 'signup', { method: 'email', plan: promoPlan });
 
     // Fire-and-forget notification — never blocks or breaks the signup response
     if (resend) {
@@ -378,6 +407,8 @@ app.post('/auth/facebook', async (req, res) => {
         [userId, promoPlan, promoPlan === 'home_chef']
       );
       await db.execute('INSERT INTO user_preferences (user_id, daily_calorie_goal, servings, chef_name) VALUES (?, 2000, 2, ?)', [userId, userName + "'s Chef"]);
+
+      logEvent(userId, 'signup', { method: 'facebook', plan: promoPlan });
 
       // Fire-and-forget notification — only for genuinely new users, never blocks response
       if (resend) {
@@ -527,6 +558,7 @@ app.post('/pantry/scan', authMiddleware, async (req, res) => {
       console.error('Pantry scan parse error:', e.message);
     }
 
+    logEvent(req.user.userId, 'pantry_scan', { itemsFound: items.length });
     res.json({ items });
   } catch (err) {
     console.error('Pantry scan error:', err);
@@ -825,6 +857,9 @@ Recipe steps must follow professional cookbook standards (America's Test Kitchen
     }
 
     // Return response with _id attached to each recipe so frontend can save favorites/ratings
+    const eventType = prompt.includes('SOUP STYLE') ? 'soup_spin' : prompt.includes('dinner for') && prompt.includes('week') ? 'week_spin' : 'spin';
+    logEvent(req.user.userId, eventType, { recipeCount: recipes.length });
+
     res.json({
       ...data,
       content: [{ type: 'text', text: JSON.stringify({ recipes }) }]
@@ -924,6 +959,7 @@ app.post('/favorites/:recipeId', authMiddleware, async (req, res) => {
       'INSERT INTO favorite_recipes (user_id, recipe_id) VALUES (?, ?)',
       [req.user.userId, req.params.recipeId]
     );
+    logEvent(req.user.userId, 'favorite_add', { recipeId: req.params.recipeId });
     res.json({ success: true });
   } catch {
     res.status(400).json({ error: 'Already favorited' });
@@ -1001,6 +1037,7 @@ app.post('/threeday/add', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Your 3-Day Plan is full (3 recipes max) — remove one first.', full: true });
     }
     await db.execute('INSERT INTO three_day_plan (user_id, recipe_id) VALUES (?, ?)', [req.user.userId, recipeId]);
+    logEvent(req.user.userId, 'three_day_plan_add', { recipeId });
     res.json({ success: true, count: existing.length + 1 });
   } catch (e) {
     if (e.code === 'ER_DUP_ENTRY') return res.status(400).json({ error: 'That recipe is already in your 3-Day Plan.' });
@@ -1675,6 +1712,44 @@ app.get('/admin/clear-cookbook', adminAuth, async (req, res) => {
     await db.execute('DELETE FROM spin_counts WHERE user_id = ?', [userId]);
 
     res.json({ success: true, userId, recipesCleared: recipeIds.length, mealPlansCleared: planRows.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /admin/stats — usage summary: signups, spins, and other events over time
+app.get('/admin/stats', adminAuth, async (req, res) => {
+  try {
+    const [signupsToday] = await db.execute("SELECT COUNT(*) as c FROM users WHERE created_at >= CURDATE()");
+    const [signupsWeek] = await db.execute("SELECT COUNT(*) as c FROM users WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)");
+    const [totalUsers] = await db.execute("SELECT COUNT(*) as c FROM users");
+    const [eventCounts] = await db.execute(
+      `SELECT event_type, COUNT(*) as count FROM user_events
+       WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+       GROUP BY event_type ORDER BY count DESC`
+    );
+    const [dailyEvents] = await db.execute(
+      `SELECT DATE(created_at) as day, event_type, COUNT(*) as count
+       FROM user_events
+       WHERE created_at >= DATE_SUB(NOW(), INTERVAL 14 DAY)
+       GROUP BY DATE(created_at), event_type
+       ORDER BY day DESC`
+    );
+    const [topUsers] = await db.execute(
+      `SELECT u.email, COUNT(*) as event_count
+       FROM user_events ue JOIN users u ON u.id = ue.user_id
+       WHERE ue.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+       GROUP BY u.id ORDER BY event_count DESC LIMIT 10`
+    );
+
+    res.json({
+      totalUsers: totalUsers[0].c,
+      signupsToday: signupsToday[0].c,
+      signupsLast7Days: signupsWeek[0].c,
+      eventCountsLast7Days: eventCounts,
+      dailyEventsLast14Days: dailyEvents,
+      topActiveUsersLast7Days: topUsers
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
