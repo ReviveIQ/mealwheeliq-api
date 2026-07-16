@@ -346,6 +346,55 @@ async function getPromoPlan() {
   }
 }
 
+// Sends the welcome/getting-started email — branches copy by signup method
+// (email/password vs Facebook) and by whether they landed the first-100 promo.
+// Fire-and-forget: never blocks or breaks the signup response.
+function sendWelcomeEmail(email, method, plan) {
+  if (!resend) return;
+
+  const gotPromo = plan === 'home_chef';
+  const loginLine = method === 'facebook'
+    ? 'Log in at mealwheeliq.com with the "Continue with Facebook" button'
+    : 'Log in at mealwheeliq.com with the password you just created';
+
+  const promoIntro = gotPromo
+    ? " — and since you're one of our first 100 members, you've been upgraded to Home Chef for free. For life. No catch."
+    : '.';
+
+  const passwordTip = method === 'facebook'
+    ? ''
+    : "\n\nOne tip: hang onto your password somewhere safe (a password manager works great) — we don't store it in a readable form, so we can't look it up or resend it to you.";
+
+  const text = `Hi there,
+
+Welcome to MealWheelIQ! Your account is all set${method === 'facebook' ? ', connected through Facebook' : ` with the email ${email}`}${promoIntro}
+
+Here's how to get started:
+
+1. ${loginLine}
+2. Grab your phone and snap a photo of your fridge, freezer, and pantry — don't bother typing everything in by hand, just let the camera do the work
+3. Hit Spin — you'll get 4 real recipes, including a guaranteed healthy salad option
+4. Pick one, cook it, done
+
+A few things worth trying once you're in:
+- Dietary filters (vegetarian, gluten-free, keto, and a dozen more)
+- Soup Creator, for something warm and simmered
+- Your Cookbook tab saves every recipe you've ever spun — searchable, forever${passwordTip}
+
+Questions or feedback? Just reply — a real person (me) reads every email.
+
+Happy spinning,
+Bryan
+Founder, MealWheelIQ`;
+
+  resend.emails.send({
+    from: process.env.RESEND_FROM || 'onboarding@resend.dev',
+    to: email,
+    subject: 'Welcome to MealWheelIQ 🍽️ — let\'s fix dinner',
+    text
+  }).catch(e => console.error('Welcome email failed:', e.message));
+}
+
 // Logs a usage event for analytics — never throws, never blocks the caller
 async function logEvent(userId, eventType, data = {}) {
   try {
@@ -383,6 +432,7 @@ app.post('/auth/signup', async (req, res) => {
     res.json({ token, user: { id: userId, email, plan: promoPlan } });
 
     logEvent(userId, 'signup', { method: 'email', plan: promoPlan });
+    sendWelcomeEmail(email, 'email', promoPlan);
 
     // Fire-and-forget notification — never blocks or breaks the signup response
     if (resend) {
@@ -435,6 +485,7 @@ app.post('/auth/facebook', async (req, res) => {
       await db.execute('INSERT INTO user_preferences (user_id, daily_calorie_goal, servings, chef_name) VALUES (?, 2000, 2, ?)', [userId, userName + "'s Chef"]);
 
       logEvent(userId, 'signup', { method: 'facebook', plan: promoPlan });
+      sendWelcomeEmail(userEmail, 'facebook', promoPlan);
 
       // Fire-and-forget notification — only for genuinely new users, never blocks response
       if (resend) {
