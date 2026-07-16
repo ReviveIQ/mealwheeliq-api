@@ -471,6 +471,7 @@ app.post('/auth/facebook', async (req, res) => {
     let userId;
     if (users.length) {
       userId = users[0].id;
+      logEvent(userId, 'login', { method: 'facebook' });
     } else {
       const promoPlan = await getPromoPlan();
       const [result] = await db.execute(
@@ -522,6 +523,7 @@ app.post('/auth/login', async (req, res) => {
     const plan = await getUserPlan(user.id);
     const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '30d' });
     res.json({ token, user: { id: user.id, email: user.email, plan } });
+    logEvent(user.id, 'login', { method: 'email' });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Login failed' });
@@ -1992,7 +1994,7 @@ app.get('/admin/dashboard-data', adminAuth, async (req, res) => {
         (SELECT COUNT(*) FROM user_events ue WHERE ue.user_id = u.id AND ue.event_type = 'week_spin') AS week_spins,
         (SELECT COUNT(*) FROM user_events ue WHERE ue.user_id = u.id AND ue.event_type = 'pantry_scan') AS pantry_scans,
         (SELECT COUNT(*) FROM user_events ue WHERE ue.user_id = u.id) AS total_events,
-        (SELECT MAX(ue.created_at) FROM user_events ue WHERE ue.user_id = u.id AND ue.event_type NOT IN ('reengagement_email_sent', 'signup')) AS last_active
+        (SELECT MAX(ue.created_at) FROM user_events ue WHERE ue.user_id = u.id AND ue.event_type = 'login') AS last_active
       FROM users u
       LEFT JOIN subscriptions s ON s.user_id = u.id
       ORDER BY u.created_at DESC
