@@ -1897,16 +1897,26 @@ app.get('/admin/send-reengagement-emails', adminAuth, async (req, res) => {
         subject: 'Your fridge is waiting 🧊',
         text: `Hey there,
 
-Noticed you signed up for MealWheelIQ but haven't taken it for a spin yet — no worries, life gets busy. Here's the fastest way in:
+Thanks for signing up for MealWheelIQ!
 
-Grab your phone right now and snap a photo of your fridge, freezer, and pantry. Don't type anything in — just let the camera do the work.
+I noticed you haven't had a chance to try it yet, and that's completely okay—I know how busy life gets.
 
-Then hit Spin. You'll get 4 real dinner recipes built from what you actually have, including a guaranteed healthy salad option.
+When you have 30 seconds, here's the easiest way to see what MealWheelIQ can do:
 
-Takes about 30 seconds start to finish. Give it a shot tonight:
-mealwheeliq.com
+📸 Snap a photo of your fridge, freezer, and pantry.
+🥫 Let MealWheelIQ identify your ingredients automatically.
+🎡 Spin the wheel.
+🍽️ Get four recipes you can make right away, including a healthy salad option.
 
-— Bryan
+No long ingredient lists. No endless recipe scrolling.
+Just dinner ideas from the food you already have.
+
+Give it a spin tonight and let me know what you think—I'd genuinely love your feedback as I continue improving MealWheelIQ.
+
+👉 mealwheeliq.com
+
+Thanks for giving it a try!
+Bryan
 Founder, MealWheelIQ`
       }).catch(e => console.error('Reengagement email failed for', user.email, ':', e.message));
 
