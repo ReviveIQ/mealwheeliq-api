@@ -1870,6 +1870,49 @@ app.get('/admin/clear-cookbook', adminAuth, async (req, res) => {
 // actually did anything (no spin, soup spin, week spin, or pantry scan) to
 // snap a photo of their fridge/pantry and give it a try. Safe to re-run —
 // tracks who's already been sent this so it never double-emails anyone.
+// GET /admin/test-reengagement-email?email=X — sends the exact reengagement
+// copy to any address for review, without touching the real qualification
+// logic or logging a reengagement_email_sent event.
+app.get('/admin/test-reengagement-email', adminAuth, async (req, res) => {
+  if (!resend) return res.status(500).json({ error: 'Resend not configured' });
+  const testEmail = req.query.email;
+  if (!testEmail) return res.status(400).json({ error: 'Provide ?email=you@example.com' });
+
+  try {
+    const result = await resend.emails.send({
+      from: process.env.RESEND_FROM || 'onboarding@resend.dev',
+      to: testEmail,
+      subject: '[TEST] Your fridge is waiting 🧊',
+      text: `Hey there,
+
+Thanks for signing up for MealWheelIQ!
+
+I noticed you haven't had a chance to try it yet, and that's completely okay—I know how busy life gets.
+
+When you have 30 seconds, here's the easiest way to see what MealWheelIQ can do:
+
+📸 Snap a photo of your fridge, freezer, and pantry.
+🥫 Let MealWheelIQ identify your ingredients automatically.
+🎡 Spin the wheel.
+🍽️ Get four recipes you can make right away, including a healthy salad option.
+
+No long ingredient lists. No endless recipe scrolling.
+Just dinner ideas from the food you already have.
+
+Give it a spin tonight and let me know what you think—I'd genuinely love your feedback as I continue improving MealWheelIQ.
+
+👉 mealwheeliq.com
+
+Thanks for giving it a try!
+Bryan
+Founder, MealWheelIQ`
+    });
+    res.json({ sent: true, result });
+  } catch (e) {
+    res.status(500).json({ sent: false, error: e.message });
+  }
+});
+
 app.get('/admin/send-reengagement-emails', adminAuth, async (req, res) => {
   if (!resend) return res.status(500).json({ error: 'Resend not configured' });
 
