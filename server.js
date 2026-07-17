@@ -943,24 +943,26 @@ Recipe steps must follow professional cookbook standards (America's Test Kitchen
         // out of line with the AI's own estimate, trust the AI estimate instead
         // of shipping a falsely "verified" but wrong number.
         const aiEstimate = parseFloat(r.calories_per_serving) || 0;
-        // Two independent checks — both must pass:
-        // 1) Verified total isn't wildly off from the AI's own ballpark estimate
-        // 2) The macros are internally consistent: protein(4) + carbs(4) + fat(9)
-        //    should roughly equal calories_per_serving. A bad ingredient match
-        //    (e.g. garlic matched to a concentrated dehydrated product) tends to
-        //    blow up carbs/fiber without the calorie total following — this catches
-        //    exactly that pattern even when the total calories look reasonable.
+        // Only ONE real gate now: internal macro consistency — protein(4) +
+        // carbs(4) + fat(9) must roughly equal the stated calories. This
+        // catches genuine bad matches (e.g. garlic matched to a concentrated
+        // dehydrated product blows up carbs/fiber without calories following).
+        //
+        // We dropped the old "compare against the AI's own calorie estimate"
+        // check — that estimate isn't independently grounded. The AI tends to
+        // echo back the calorie target we gave it in the prompt rather than
+        // truly deriving a number from its own ingredient list, so real,
+        // correctly-calculated USDA data was being rejected just for
+        // disagreeing with a number the AI never actually calculated honestly.
         let plausible = false;
         if (verified) {
-          const ratio = aiEstimate > 0 ? verified.calories_per_serving / aiEstimate : 1;
-          const ratioOk = aiEstimate === 0 || (ratio > 0.5 && ratio < 2.0);
           const macroCalories = (verified.protein_g * 4) + (verified.carbs_g * 4) + (verified.fat_g * 9);
           const macroConsistent = verified.calories_per_serving === 0
             ? false
             : Math.abs(macroCalories - verified.calories_per_serving) / verified.calories_per_serving < 0.35;
-          plausible = ratioOk && macroConsistent;
+          plausible = macroConsistent;
           if (!plausible) {
-            console.log(`USDA verification rejected for "${r.name}": ratioOk=${ratioOk} (${verified.calories_per_serving}kcal verified vs ${aiEstimate}kcal AI estimate), macroConsistent=${macroConsistent} (macro-math=${Math.round(macroCalories)}kcal vs stated=${verified.calories_per_serving}kcal)`);
+            console.log(`USDA verification rejected for "${r.name}": macro-math=${Math.round(macroCalories)}kcal vs stated=${verified.calories_per_serving}kcal (AI's own estimate was ${aiEstimate}kcal, not used as a gate)`);
           }
         }
         // Log (don't reject) when a verified recipe blows past the dinner
