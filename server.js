@@ -1112,24 +1112,6 @@ app.post('/favorites/:recipeId', authMiddleware, async (req, res) => {
     );
     logEvent(req.user.userId, 'favorite_add', { recipeId: req.params.recipeId });
     res.json({ success: true });
-
-    // Auto-generate the public OG/SEO page for this recipe — favoriting is
-    // a real quality signal, so we don't wait for the user to click Share.
-    // Fire-and-forget: mint a short-lived internal token and call the
-    // existing og-page logic exactly as the frontend would, reusing it
-    // untouched rather than duplicating that ~300-line function.
-    (async () => {
-      try {
-        const internalToken = jwt.sign({ userId: req.user.userId, email: req.user.email }, JWT_SECRET, { expiresIn: '5m' });
-        await fetch(`https://api.mealwheeliq.com/recipe/${req.params.recipeId}/og-page`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + internalToken },
-          body: JSON.stringify({ imageUrl: null })
-        });
-      } catch (e) {
-        console.error('Auto OG-page generation on favorite failed:', e.message);
-      }
-    })();
   } catch {
     res.status(400).json({ error: 'Already favorited' });
   }
