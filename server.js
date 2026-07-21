@@ -2031,7 +2031,8 @@ app.get('/admin/send-reengagement-emails', adminAuth, async (req, res) => {
     const [users] = await db.execute(`
       SELECT u.id, u.email
       FROM users u
-      WHERE NOT EXISTS (
+      WHERE u.created_at <= DATE_SUB(NOW(), INTERVAL 7 DAY)
+      AND NOT EXISTS (
         SELECT 1 FROM user_events ue
         WHERE ue.user_id = u.id
         AND ue.event_type IN ('spin', 'soup_spin', 'week_spin', 'pantry_scan')
@@ -2048,28 +2049,24 @@ app.get('/admin/send-reengagement-emails', adminAuth, async (req, res) => {
       resend.emails.send({
         from: process.env.RESEND_FROM || 'onboarding@resend.dev',
         to: user.email,
-        subject: 'Your fridge is waiting 🧊',
+        subject: '🎡 It only takes one spin...',
         text: `Hey there,
 
-Thanks for signing up for MealWheelIQ!
+It's officially been a week since you signed up for MealWheelIQ, and your wheel is just sitting there. Untouched. Getting dusty. It has feelings too, probably.
 
-I noticed you haven't had a chance to try it yet, and that's completely okay—I know how busy life gets.
+Here's the deal: you don't need a plan, a grocery list, or even much motivation. Just:
 
-When you have 30 seconds, here's the easiest way to see what MealWheelIQ can do:
+1. Sign in
+2. Snap a photo of whatever's in your fridge (or don't — you can type it in too)
+3. Spin
+4. Get a real dinner idea in about 10 seconds
 
-📸 Snap a photo of your fridge, freezer, and pantry.
-🥫 Let MealWheelIQ identify your ingredients automatically.
-🎡 Spin the wheel.
-🍽️ Get four recipes you can make right away, including a healthy salad option.
+That's it. That's the whole app.
 
-No long ingredient lists. No endless recipe scrolling.
-Just dinner ideas from the food you already have.
+👉 Sign in and spin: mealwheeliq.com
 
-Give it a spin tonight and let me know what you think—I'd genuinely love your feedback as I continue improving MealWheelIQ.
+No pressure, no guilt — just a genuinely easy win for tonight's dinner if you want one.
 
-👉 mealwheeliq.com
-
-Thanks for giving it a try!
 Bryan
 Founder, MealWheelIQ`
       }).catch(e => console.error('Reengagement email failed for', user.email, ':', e.message));
