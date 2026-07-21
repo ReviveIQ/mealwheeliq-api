@@ -2046,10 +2046,35 @@ app.get('/admin/send-reengagement-emails', adminAuth, async (req, res) => {
 
     const sentTo = [];
     for (const user of users) {
+      const bannerUrl = 'https://mealwheeliq.com/email-assets/family-wheel-banner.jpg';
       resend.emails.send({
         from: process.env.RESEND_FROM || 'onboarding@resend.dev',
         to: user.email,
         subject: '🎡 It only takes one spin...',
+        html: `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#FAF7F2;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif">
+<div style="max-width:600px;margin:0 auto;padding:0 0 24px">
+  <img src="${bannerUrl}" alt="MealWheelIQ" style="width:100%;display:block">
+  <div style="padding:28px 24px 0">
+    <p style="font-size:15px;color:#1C1714;line-height:1.6">Hey there,</p>
+    <p style="font-size:15px;color:#1C1714;line-height:1.6">It's officially been a week since you signed up for MealWheelIQ, and your wheel is just sitting there. Untouched. Getting dusty. It has feelings too, probably.</p>
+    <p style="font-size:15px;color:#1C1714;line-height:1.6">Here's the deal: you don't need a plan, a grocery list, or even much motivation. Just:</p>
+    <ol style="font-size:15px;color:#1C1714;line-height:1.9;padding-left:20px">
+      <li>Sign in</li>
+      <li>Snap a photo of whatever's in your fridge (or don't — you can type it in too)</li>
+      <li>Spin</li>
+      <li>Get a real dinner idea in about 10 seconds</li>
+    </ol>
+    <p style="font-size:15px;color:#1C1714;line-height:1.6">That's it. That's the whole app.</p>
+    <div style="text-align:center;margin:28px 0">
+      <a href="https://mealwheeliq.com/login.html" style="background:#C94B2A;color:white;text-decoration:none;border-radius:24px;padding:14px 32px;font-size:15px;font-weight:700;display:inline-block">👉 Sign in and spin</a>
+    </div>
+    <p style="font-size:15px;color:#1C1714;line-height:1.6">No pressure, no guilt — just a genuinely easy win for tonight's dinner if you want one.</p>
+    <p style="font-size:15px;color:#1C1714;line-height:1.6">Bryan<br>Founder, MealWheelIQ</p>
+  </div>
+</div>
+</body></html>`,
         text: `Hey there,
 
 It's officially been a week since you signed up for MealWheelIQ, and your wheel is just sitting there. Untouched. Getting dusty. It has feelings too, probably.
