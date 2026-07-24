@@ -51,7 +51,7 @@ async function connectDB() {
     database: process.env.TIDB_DATABASE,
     ssl: { rejectUnauthorized: false, minVersion: 'TLSv1.2' },
     waitForConnections: true,
-    connectionLimit: 10,
+    connectionLimit: 5,
     connectTimeout: 30000,
     enableKeepAlive: true,
     keepAliveInitialDelay: 10000
