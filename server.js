@@ -1080,15 +1080,9 @@ Recipe steps must follow professional cookbook standards (America's Test Kitchen
             console.log(`USDA verification rejected for "${r.name}": macro-math=${Math.round(macroCalories)}kcal vs stated=${verified.calories_per_serving}kcal (AI's own estimate was ${aiEstimate}kcal, not used as a gate)`);
           }
         }
-        // Log (don't reject) when a verified recipe blows past the dinner
-        // budget — a legitimately high-calorie recipe is a valid outcome
-        // (the UI already flags this visually), not a sign of a bad match.
-        if (verified && plausible && dailyGoal) {
-          const dinnerTarget = Math.round(dailyGoal * 0.35);
-          if (verified.calories_per_serving > dinnerTarget * 1.8) {
-            console.log(`Recipe "${r.name}" is ${verified.calories_per_serving}kcal vs ~${dinnerTarget}kcal dinner target (${Math.round(dailyGoal)}kcal/day goal)`);
-          }
-        }
+        // Note: the old "log only" calorie-overrun warning was removed —
+        // it's now superseded by the deterministic scale-down step below,
+        // which actually fixes the problem instead of just logging it.
         if (verified && plausible) {
           r.calories_per_serving = verified.calories_per_serving;
           r.protein_g = verified.protein_g;
@@ -1107,6 +1101,44 @@ Recipe steps must follow professional cookbook standards (America's Test Kitchen
           const f = parseFloat(r.fat_g) || 0;
           const recalculated = Math.round((p * 4) + (c * 4) + (f * 9));
           if (recalculated > 0) r.calories_per_serving = recalculated;
+        }
+
+        // Hard portion scale-down — the AI was repeatedly ignoring the
+        // "treat this as a ceiling" prompt instruction (recipes still
+        // landing 2-3x over target), so this enforces it deterministically
+        // instead of hoping the model complies. If the final calories still
+        // exceed 1.3x the dinner target, scale every ingredient quantity
+        // and every macro down proportionally — this is just "make the
+        // portion smaller," not a redesign of the dish.
+        if (dailyGoal) {
+          const dinnerTarget = Math.round(dailyGoal * 0.35);
+          const ceiling = dinnerTarget * 1.3;
+          if (r.calories_per_serving > ceiling) {
+            const scale = ceiling / r.calories_per_serving;
+            console.log(`Scaling down "${r.name}": ${r.calories_per_serving}kcal exceeded ${Math.round(ceiling)}kcal ceiling, applying ${scale.toFixed(2)}x portion scale`);
+
+            r.calories_per_serving = Math.round(r.calories_per_serving * scale);
+            r.protein_g = Math.round((r.protein_g || 0) * scale);
+            r.carbs_g = Math.round((r.carbs_g || 0) * scale);
+            r.fat_g = Math.round((r.fat_g || 0) * scale);
+            if (r.fiber_g) r.fiber_g = Math.round(r.fiber_g * scale);
+            if (r.sodium_mg) r.sodium_mg = Math.round(r.sodium_mg * scale);
+
+            if (Array.isArray(r.ingredients)) {
+              r.ingredients = r.ingredients.map(ing => {
+                const qty = parseFloat(ing.quantity);
+                if (!isNaN(qty) && qty > 0) {
+                  const scaledQty = qty * scale;
+                  // Round to a sensible precision depending on magnitude
+                  const rounded = scaledQty >= 10 ? Math.round(scaledQty)
+                    : scaledQty >= 1 ? Math.round(scaledQty * 4) / 4  // nearest quarter
+                    : Math.round(scaledQty * 100) / 100;
+                  return { ...ing, quantity: String(rounded) };
+                }
+                return ing; // leave non-numeric quantities (e.g. "to taste") untouched
+              });
+            }
+          }
         }
 
         const [result] = await db.execute(
