@@ -1112,7 +1112,7 @@ Recipe steps must follow professional cookbook standards (America's Test Kitchen
         // portion smaller," not a redesign of the dish.
         if (dailyGoal) {
           const dinnerTarget = Math.round(dailyGoal * 0.35);
-          const ceiling = dinnerTarget * 1.3;
+          const ceiling = dinnerTarget * 1.1;
           if (r.calories_per_serving > ceiling) {
             const scale = ceiling / r.calories_per_serving;
             console.log(`Scaling down "${r.name}": ${r.calories_per_serving}kcal exceeded ${Math.round(ceiling)}kcal ceiling, applying ${scale.toFixed(2)}x portion scale`);
