@@ -289,6 +289,33 @@ async function createTables() {
     )
   `);
 
+  // ─── CHEF AVATAR MARKET ──────────────────────────────────────────────────
+  // One row per user: base avatar gender + whichever item is currently
+  // equipped per category. NULL in an equipped_* column just means "nothing
+  // equipped there yet" — not an error.
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS user_avatar (
+      user_id INT PRIMARY KEY,
+      gender ENUM('male','female','neutral') NOT NULL DEFAULT 'neutral',
+      equipped_hat VARCHAR(50) NULL,
+      equipped_apron VARCHAR(50) NULL,
+      equipped_tool VARCHAR(50) NULL,
+      equipped_background VARCHAR(50) NULL,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+  `);
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS user_avatar_items (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      item_key VARCHAR(50) NOT NULL,
+      purchased_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_user_item (user_id, item_key),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+  `);
+
   // ── Migrations — safe to run on every boot, errors mean column exists ────────
   const migrations = [
     { sql: "ALTER TABLE users ADD COLUMN facebook_id VARCHAR(50) UNIQUE", name: 'facebook_id' },
@@ -302,6 +329,7 @@ async function createTables() {
     { sql: "ALTER TABLE recipe_history ADD COLUMN image_url TEXT", name: 'image_url' },
     { sql: "ALTER TABLE recipe_history ADD COLUMN fiber_g DECIMAL(5,1)", name: 'fiber_g' },
     { sql: "ALTER TABLE subscriptions ADD COLUMN is_promo BOOLEAN DEFAULT FALSE", name: 'is_promo' },
+    { sql: "ALTER TABLE user_points ADD COLUMN spendable_points INT NOT NULL DEFAULT 0", name: 'spendable_points' },
   ];
 
   for (const m of migrations) {
@@ -468,6 +496,37 @@ const RANKS = [
 const POINTS = { spin: 5, firstSpinOfDayBonus: 10, share: 15, cookedItPhoto: 20 };
 const DAILY_POINT_CAP = 150; // guardrail so points reward habit, not automation
 
+// Base avatar — gendered, since not everyone using this app is a "chef guy."
+// Mirror of GENDER_EMOJI in app.html — keep both in sync.
+const GENDER_EMOJI = { male: '👨‍🍳', female: '👩‍🍳', neutral: '🧑‍🍳' };
+
+// ─── AVATAR MARKET CATALOG ───────────────────────────────────────────────────
+// Cosmetic-only items, purchased with spendable points (separate currency from
+// the lifetime rank total — spending never demotes your rank). Mirror of
+// AVATAR_CATALOG in app.html — keep both in sync. Items render as a row of
+// badge chips next to the base avatar rather than layered illustration, since
+// there's no character art pipeline yet (matches the "simple badge UI" call).
+const AVATAR_CATALOG = [
+  // Hats
+  { key: 'hat_bandana', category: 'hat', name: 'Bandana', emoji: '🧢', cost: 25 },
+  { key: 'hat_tophat', category: 'hat', name: 'Top Hat', emoji: '🎩', cost: 60 },
+  { key: 'hat_crown', category: 'hat', name: 'Golden Crown', emoji: '👑', cost: 150 },
+  // Aprons
+  { key: 'apron_red', category: 'apron', name: 'Red Apron', emoji: '🔴', cost: 25 },
+  { key: 'apron_black', category: 'apron', name: 'Black Apron', emoji: '⚫', cost: 40 },
+  { key: 'apron_gold', category: 'apron', name: 'Gold-Trim Apron', emoji: '🟡', cost: 120 },
+  // Tools
+  { key: 'tool_spoon', category: 'tool', name: 'Wooden Spoon', emoji: '🥄', cost: 20 },
+  { key: 'tool_knife', category: 'tool', name: "Chef's Knife", emoji: '🔪', cost: 50 },
+  { key: 'tool_scale', category: 'tool', name: 'Kitchen Scale', emoji: '⚖️', cost: 45 },
+  { key: 'tool_torch', category: 'tool', name: 'Blowtorch', emoji: '🔥', cost: 90 },
+  // Backgrounds / kitchen scenes
+  { key: 'bg_home', category: 'background', name: 'Home Kitchen', emoji: '🏠', cost: 30 },
+  { key: 'bg_city', category: 'background', name: 'City Apartment', emoji: '🏙️', cost: 30 },
+  { key: 'bg_farmhouse', category: 'background', name: 'Farmhouse Kitchen', emoji: '🌾', cost: 60 },
+  { key: 'bg_michelin', category: 'background', name: 'Michelin Dining Room', emoji: '⭐', cost: 200 },
+];
+
 function getRankForPoints(points) {
   let current = RANKS[0];
   for (const r of RANKS) {
@@ -488,8 +547,12 @@ function getRankForPoints(points) {
 // Awards points with a daily cap guardrail. Returns however much was actually
 // awarded (may be less than requested, or 0, if the user already hit the cap
 // today) along with their new lifetime total.
+// total_points is the permanent, never-decreasing lifetime total that drives
+// chef rank. spendable_points earns alongside it but can be spent in the
+// avatar market — spending never touches total_points, so buying an item
+// can never demote your rank.
 async function awardPoints(userId, actionType, points, meta = {}) {
-  if (!userId || !points) return { awarded: 0, totalPoints: null };
+  if (!userId || !points) return { awarded: 0, totalPoints: null, spendablePoints: null };
   try {
     const [todayRows] = await db.execute(
       `SELECT COALESCE(SUM(points),0) as todayTotal FROM point_events WHERE user_id = ? AND DATE(created_at) = CURDATE()`,
@@ -498,9 +561,13 @@ async function awardPoints(userId, actionType, points, meta = {}) {
     const remainingToday = Math.max(0, DAILY_POINT_CAP - (todayRows[0]?.todayTotal || 0));
     const toAward = Math.min(points, remainingToday);
 
-    const [existingRows] = await db.execute('SELECT total_points FROM user_points WHERE user_id = ?', [userId]);
+    const [existingRows] = await db.execute('SELECT total_points, spendable_points FROM user_points WHERE user_id = ?', [userId]);
     if (toAward <= 0) {
-      return { awarded: 0, totalPoints: existingRows[0]?.total_points || 0 };
+      return {
+        awarded: 0,
+        totalPoints: existingRows[0]?.total_points || 0,
+        spendablePoints: existingRows[0]?.spendable_points || 0
+      };
     }
 
     await db.execute(
@@ -508,15 +575,16 @@ async function awardPoints(userId, actionType, points, meta = {}) {
       [userId, actionType, toAward, JSON.stringify(meta)]
     );
     await db.execute(
-      `INSERT INTO user_points (user_id, total_points) VALUES (?, ?)
-       ON DUPLICATE KEY UPDATE total_points = total_points + ?`,
-      [userId, toAward, toAward]
+      `INSERT INTO user_points (user_id, total_points, spendable_points) VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE total_points = total_points + ?, spendable_points = spendable_points + ?`,
+      [userId, toAward, toAward, toAward, toAward]
     );
     const newTotal = (existingRows[0]?.total_points || 0) + toAward;
-    return { awarded: toAward, totalPoints: newTotal };
+    const newSpendable = (existingRows[0]?.spendable_points || 0) + toAward;
+    return { awarded: toAward, totalPoints: newTotal, spendablePoints: newSpendable };
   } catch (e) {
     console.error('awardPoints failed:', actionType, e.message);
-    return { awarded: 0, totalPoints: null };
+    return { awarded: 0, totalPoints: null, spendablePoints: null };
   }
 }
 
@@ -1018,7 +1086,11 @@ app.post('/points/spin', authMiddleware, async (req, res) => {
     let result = await awardPoints(req.user.userId, 'spin', total, meta);
     if (!alreadySpunToday) {
       const bonus = await awardPoints(req.user.userId, 'spin_daily_bonus', POINTS.firstSpinOfDayBonus, meta);
-      result = { awarded: result.awarded + bonus.awarded, totalPoints: bonus.totalPoints ?? result.totalPoints };
+      result = {
+        awarded: result.awarded + bonus.awarded,
+        totalPoints: bonus.totalPoints ?? result.totalPoints,
+        spendablePoints: bonus.spendablePoints ?? result.spendablePoints
+      };
     }
     const rankInfo = getRankForPoints(result.totalPoints || 0);
     res.json({ ...result, rank: rankInfo });
@@ -1045,13 +1117,123 @@ app.post('/points/share', authMiddleware, async (req, res) => {
 // GET /points/me — current total, rank, and progress to the next rank.
 app.get('/points/me', authMiddleware, async (req, res) => {
   try {
-    const [rows] = await db.execute('SELECT total_points FROM user_points WHERE user_id = ?', [req.user.userId]);
+    const [rows] = await db.execute('SELECT total_points, spendable_points FROM user_points WHERE user_id = ?', [req.user.userId]);
     const totalPoints = rows[0]?.total_points || 0;
+    const spendablePoints = rows[0]?.spendable_points || 0;
     const rankInfo = getRankForPoints(totalPoints);
-    res.json({ totalPoints, rank: rankInfo, ladder: RANKS });
+    res.json({ totalPoints, spendablePoints, rank: rankInfo, ladder: RANKS });
   } catch (e) {
     console.error('points/me error:', e.message);
     res.status(500).json({ error: 'Could not load points' });
+  }
+});
+
+// ─── CHEF AVATAR MARKET ROUTES ───────────────────────────────────────────────
+
+// Fetch-or-create the user's avatar row — every user gets a default neutral
+// avatar with nothing equipped the first time they touch any avatar route.
+async function getOrCreateAvatar(userId) {
+  const [rows] = await db.execute('SELECT * FROM user_avatar WHERE user_id = ?', [userId]);
+  if (rows.length) return rows[0];
+  await db.execute('INSERT INTO user_avatar (user_id) VALUES (?)', [userId]);
+  return { user_id: userId, gender: 'neutral', equipped_hat: null, equipped_apron: null, equipped_tool: null, equipped_background: null };
+}
+
+// GET /avatar/catalog — public-ish (still authenticated, no reason to expose
+// pricing to logged-out scrapers). Frontend fetches this once instead of
+// hardcoding prices, so client and server can never drift on cost.
+app.get('/avatar/catalog', authMiddleware, (req, res) => {
+  res.json({ catalog: AVATAR_CATALOG, genderEmoji: GENDER_EMOJI });
+});
+
+// GET /avatar/me — current gender, equipped items, and owned item keys.
+app.get('/avatar/me', authMiddleware, async (req, res) => {
+  try {
+    const avatar = await getOrCreateAvatar(req.user.userId);
+    const [ownedRows] = await db.execute('SELECT item_key FROM user_avatar_items WHERE user_id = ?', [req.user.userId]);
+    res.json({
+      gender: avatar.gender,
+      equipped: {
+        hat: avatar.equipped_hat,
+        apron: avatar.equipped_apron,
+        tool: avatar.equipped_tool,
+        background: avatar.equipped_background
+      },
+      owned: ownedRows.map(r => r.item_key)
+    });
+  } catch (e) {
+    console.error('avatar/me error:', e.message);
+    res.status(500).json({ error: 'Could not load avatar' });
+  }
+});
+
+// POST /avatar/gender — body {gender: 'male'|'female'|'neutral'}. Free, no
+// points involved — this is who you are, not something you buy.
+app.post('/avatar/gender', authMiddleware, async (req, res) => {
+  const { gender } = req.body || {};
+  if (!['male', 'female', 'neutral'].includes(gender)) {
+    return res.status(400).json({ error: 'gender must be male, female, or neutral' });
+  }
+  try {
+    await getOrCreateAvatar(req.user.userId); // ensure row exists
+    await db.execute('UPDATE user_avatar SET gender = ? WHERE user_id = ?', [gender, req.user.userId]);
+    res.json({ success: true, gender });
+  } catch (e) {
+    console.error('avatar/gender error:', e.message);
+    res.status(500).json({ error: 'Could not update gender' });
+  }
+});
+
+// POST /avatar/purchase — body {itemKey}. Spends from spendable_points only —
+// total_points (and therefore rank) is never touched by a purchase. Newly
+// bought items auto-equip in their category as a nice default.
+app.post('/avatar/purchase', authMiddleware, async (req, res) => {
+  const { itemKey } = req.body || {};
+  const item = AVATAR_CATALOG.find(i => i.key === itemKey);
+  if (!item) return res.status(400).json({ error: 'Unknown item' });
+
+  try {
+    const [ownedRows] = await db.execute('SELECT 1 FROM user_avatar_items WHERE user_id = ? AND item_key = ?', [req.user.userId, itemKey]);
+    if (ownedRows.length) return res.status(400).json({ error: 'You already own this item' });
+
+    const [pointsRows] = await db.execute('SELECT spendable_points FROM user_points WHERE user_id = ?', [req.user.userId]);
+    const spendable = pointsRows[0]?.spendable_points || 0;
+    if (spendable < item.cost) {
+      return res.status(402).json({ error: `Not enough points — need ${item.cost}, have ${spendable}` });
+    }
+
+    await db.execute('UPDATE user_points SET spendable_points = spendable_points - ? WHERE user_id = ?', [item.cost, req.user.userId]);
+    await db.execute('INSERT INTO user_avatar_items (user_id, item_key) VALUES (?, ?)', [req.user.userId, itemKey]);
+    await getOrCreateAvatar(req.user.userId); // ensure row exists before equipping
+    const equipColumn = `equipped_${item.category}`;
+    await db.execute(`UPDATE user_avatar SET ${equipColumn} = ? WHERE user_id = ?`, [itemKey, req.user.userId]);
+
+    const newSpendable = spendable - item.cost;
+    res.json({ success: true, item, spendablePoints: newSpendable, equipped: itemKey });
+  } catch (e) {
+    console.error('avatar/purchase error:', e.message);
+    res.status(500).json({ error: 'Purchase failed' });
+  }
+});
+
+// POST /avatar/equip — body {itemKey}. Free — just swaps which owned item of
+// that category is currently displayed.
+app.post('/avatar/equip', authMiddleware, async (req, res) => {
+  const { itemKey } = req.body || {};
+  const item = AVATAR_CATALOG.find(i => i.key === itemKey);
+  if (!item) return res.status(400).json({ error: 'Unknown item' });
+
+  try {
+    const [ownedRows] = await db.execute('SELECT 1 FROM user_avatar_items WHERE user_id = ? AND item_key = ?', [req.user.userId, itemKey]);
+    if (!ownedRows.length) return res.status(403).json({ error: 'You do not own this item yet' });
+
+    await getOrCreateAvatar(req.user.userId);
+    const equipColumn = `equipped_${item.category}`;
+    await db.execute(`UPDATE user_avatar SET ${equipColumn} = ? WHERE user_id = ?`, [itemKey, req.user.userId]);
+    res.json({ success: true, equipped: itemKey, category: item.category });
+  } catch (e) {
+    console.error('avatar/equip error:', e.message);
+    res.status(500).json({ error: 'Could not equip item' });
   }
 });
 
