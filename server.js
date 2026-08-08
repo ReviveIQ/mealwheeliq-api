@@ -585,40 +585,6 @@ const AVATAR_CATALOG = [
   { key: 'bg_michelin', category: 'background', name: 'Michelin Dining Room', emoji: '⭐', cost: 200 },
 ];
 
-// ─── AVATAR ART (illustrated layers) ─────────────────────────────────────────
-const AVATAR_ART_STYLE = 'Flat vector illustration style, thick clean black outlines (3-4px), warm minimal color palette (coral orange #C94B2A accents, cream, soft browns and warm neutrals), simple bold geometric shapes, friendly approachable character design, no photorealism, no gradients, no drop shadows, no text, no watermark, no signature, centered composition on a 1024x1024 square canvas, isolated subject only.';
-
-function avatarArtPrompt(key) {
-  const prompts = {
-    'base-male': `A front-facing bust portrait illustration (head, shoulders, and upper torso only) of a friendly young adult man, plain casual crew-neck t-shirt, short simple hairstyle, warm approachable smile, hands not visible, character centered and filling roughly 70% of the frame height, plenty of empty space around the head and torso for accessories to be layered on later. Transparent background. ${AVATAR_ART_STYLE}`,
-    'base-female': `A front-facing bust portrait illustration (head, shoulders, and upper torso only) of a friendly young adult woman, plain casual crew-neck t-shirt, simple shoulder-length hairstyle, warm approachable smile, hands not visible, character centered and filling roughly 70% of the frame height, plenty of empty space around the head and torso for accessories to be layered on later. Transparent background. ${AVATAR_ART_STYLE}`,
-    'base-neutral': `A front-facing bust portrait illustration (head, shoulders, and upper torso only) of a friendly young adult person with a gender-neutral appearance, plain casual crew-neck t-shirt, short simple hairstyle, warm approachable smile, hands not visible, character centered and filling roughly 70% of the frame height, plenty of empty space around the head and torso for accessories to be layered on later. Transparent background. ${AVATAR_ART_STYLE}`,
-    hat_bandana: `An isolated illustration of a folded bandana headwrap only — no head, no face, no hair visible — positioned in the upper-middle area of the canvas as if resting on top of an invisible head, rest of the canvas empty. Transparent background. ${AVATAR_ART_STYLE}`,
-    hat_tophat: `An isolated illustration of a classic black top hat only — no head, no face, no hair visible — positioned in the upper-middle area of the canvas as if resting on top of an invisible head, rest of the canvas empty. Transparent background. ${AVATAR_ART_STYLE}`,
-    hat_crown: `An isolated illustration of a golden royal crown with jewels only — no head, no face, no hair visible — positioned in the upper-middle area of the canvas as if resting on top of an invisible head, rest of the canvas empty. Transparent background. ${AVATAR_ART_STYLE}`,
-    apron_red: `An isolated illustration of a red kitchen apron with a neck strap and waist ties only — no body inside it — laid out flat as if worn over an invisible torso, positioned in the lower two-thirds of the canvas, rest of the canvas empty. Transparent background. ${AVATAR_ART_STYLE}`,
-    apron_black: `An isolated illustration of a black kitchen apron with a neck strap and waist ties only — no body inside it — laid out flat as if worn over an invisible torso, positioned in the lower two-thirds of the canvas, rest of the canvas empty. Transparent background. ${AVATAR_ART_STYLE}`,
-    apron_gold: `An isolated illustration of an elegant kitchen apron with gold trim and gold stitching detail only — no body inside it — laid out flat as if worn over an invisible torso, positioned in the lower two-thirds of the canvas, rest of the canvas empty. Transparent background. ${AVATAR_ART_STYLE}`,
-    tool_spoon: `An isolated illustration of a single wooden cooking spoon, positioned toward the lower-right area of the canvas as if held by an invisible hand at waist height, rest of the canvas empty. Transparent background. ${AVATAR_ART_STYLE}`,
-    tool_knife: `An isolated illustration of a single chef's knife, positioned toward the lower-right area of the canvas as if held by an invisible hand at waist height, rest of the canvas empty. Transparent background. ${AVATAR_ART_STYLE}`,
-    tool_scale: `An isolated illustration of a small kitchen scale, positioned toward the lower-right area of the canvas as if held by an invisible hand at waist height, rest of the canvas empty. Transparent background. ${AVATAR_ART_STYLE}`,
-    tool_torch: `An isolated illustration of a single culinary kitchen blowtorch tool, positioned toward the lower-right area of the canvas as if held by an invisible hand at waist height, rest of the canvas empty. Transparent background. ${AVATAR_ART_STYLE}`,
-    bg_home: `A cozy home kitchen interior scene, warm lighting, simple counter and cabinets, no people, no characters. Full-bleed background scene filling the entire canvas edge to edge. ${AVATAR_ART_STYLE}`,
-    bg_city: `A small city apartment studio kitchen interior scene with a window showing a city skyline, no people, no characters. Full-bleed background scene filling the entire canvas edge to edge. ${AVATAR_ART_STYLE}`,
-    bg_farmhouse: `A rustic farmhouse kitchen interior scene with wooden beams and a window showing a garden, no people, no characters. Full-bleed background scene filling the entire canvas edge to edge. ${AVATAR_ART_STYLE}`,
-    bg_michelin: `An elegant fine-dining restaurant kitchen pass interior scene with gold accents and warm lighting, no people, no characters. Full-bleed background scene filling the entire canvas edge to edge. ${AVATAR_ART_STYLE}`,
-  };
-  return prompts[key];
-}
-
-const AVATAR_ART_TRANSPARENT_KEYS = new Set([
-  'base-male', 'base-female', 'base-neutral',
-  'hat_bandana', 'hat_tophat', 'hat_crown',
-  'apron_red', 'apron_black', 'apron_gold',
-  'tool_spoon', 'tool_knife', 'tool_scale', 'tool_torch'
-]);
-const AVATAR_ART_KEYS = [...AVATAR_ART_TRANSPARENT_KEYS, 'bg_home', 'bg_city', 'bg_farmhouse', 'bg_michelin'];
-
 function getRankForPoints(points) {
   let current = RANKS[0];
   for (const r of RANKS) {
@@ -1327,62 +1293,6 @@ app.post('/avatar/equip', authMiddleware, async (req, res) => {
     console.error('avatar/equip error:', e.message);
     res.status(500).json({ error: 'Could not equip item' });
   }
-});
-
-// GET /admin/generate-avatar-art — one-time (or per-item) asset generation.
-// Bryan triggers this manually. Query params: ?only=key1,key2 to regenerate
-// specific items, ?force=true to regenerate even if the file already exists.
-app.get('/admin/generate-avatar-art', adminAuth, async (req, res) => {
-  if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: 'OPENAI_API_KEY not configured' });
-
-  const onlyKeys = req.query.only ? req.query.only.split(',').map(s => s.trim()) : null;
-  const force = req.query.force === 'true';
-  const keysToRun = (onlyKeys || AVATAR_ART_KEYS).filter(k => AVATAR_ART_KEYS.includes(k));
-
-  const OpenAI = require('openai');
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  const sharp = require('sharp');
-  const results = [];
-
-  for (const key of keysToRun) {
-    const ghPath = `avatar-art/${key}.png`;
-    try {
-      if (!force) {
-        const check = await ghRequestShared('GET', `https://api.github.com/repos/ReviveIQ/mealwheeliq/contents/${ghPath}`, null, GH_TOKEN);
-        if (check.status === 200) {
-          results.push({ key, status: 'skipped (already exists — pass ?force=true to regenerate)' });
-          continue;
-        }
-      }
-
-      const prompt = avatarArtPrompt(key);
-      if (!prompt) { results.push({ key, status: 'error: no prompt defined for this key' }); continue; }
-
-      const isTransparent = AVATAR_ART_TRANSPARENT_KEYS.has(key);
-      const genParams = { model: 'gpt-image-1', prompt, n: 1, size: '1024x1024' };
-      if (isTransparent) genParams.background = 'transparent';
-
-      const imgResp = await openai.images.generate(genParams);
-      const b64 = imgResp.data[0]?.b64_json;
-      if (!b64) { results.push({ key, status: 'error: no image returned' }); continue; }
-
-      const imgBuffer = Buffer.from(b64, 'base64');
-      const compressed = await sharp(imgBuffer)
-        .resize(800, 800, { fit: 'inside' })
-        .png({ quality: 85, compressionLevel: 9 })
-        .toBuffer();
-      const finalB64 = compressed.toString('base64');
-
-      await ghPushShared(ghPath, finalB64, `art: generate avatar asset ${key}`);
-      results.push({ key, status: 'generated', sizeKB: Math.round(compressed.length / 1024) });
-      console.log(`Avatar art generated: ${key} (${Math.round(compressed.length / 1024)}KB)`);
-    } catch (e) {
-      console.error(`Avatar art generation failed for ${key}:`, e.message);
-      results.push({ key, status: 'error: ' + e.message });
-    }
-  }
-
-  res.json({ done: true, count: results.length, results });
 });
 
 // ─── USDA FoodData Central — Nutrition Verification ─────────────────────────
