@@ -249,6 +249,24 @@ async function createTables() {
     )
   `);
 
+  // "Cooked It" photos — a user's proof shot of a saved recipe they actually
+  // made. Stored directly in TiDB as compressed base64 JPEG (same client-side
+  // compression already used for pantry scan photos) since there's no object
+  // storage (S3/Cloudinary) configured yet. Fine at current scale; revisit if
+  // photo volume grows enough that TiDB storage/row size becomes a concern.
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS cooked_photos (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      recipe_id INT NULL,
+      recipe_name VARCHAR(255),
+      image_base64 LONGTEXT NOT NULL,
+      media_type VARCHAR(50) DEFAULT 'image/jpeg',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+  `);
+
   // ── Migrations — safe to run on every boot, errors mean column exists ────────
   const migrations = [
     { sql: "ALTER TABLE users ADD COLUMN facebook_id VARCHAR(50) UNIQUE", name: 'facebook_id' },
@@ -827,6 +845,59 @@ app.post('/quickscan/:token/apply', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Could not save scanned items.' });
   }
 });
+
+// ─── COOKED IT — share a photo of a meal you actually made ──────────────────
+
+// POST /cooked-it/token — authenticated. Mints a no-login upload link for the
+// current user, optionally tied to a specific saved recipe. Called from the
+// in-app "📸 I made this!" button today; a future reengagement-style email
+// job can call this same route when generating "share what you made" emails.
+app.post('/cooked-it/token', authMiddleware, async (req, res) => {
+  const { recipeId, recipeName } = req.body || {};
+  const token = crypto.randomBytes(16).toString('hex');
+  pendingCookedIt.set(token, {
+    userId: req.user.userId,
+    recipeId: recipeId || null,
+    recipeName: recipeName || null,
+    uploaded: false,
+    createdAt: Date.now()
+  });
+  res.json({ token, url: `https://mealwheeliq.com/cooked-it.html?token=${token}` });
+});
+
+// POST /cooked-it/:token — public, no auth. Accepts an already client-side
+// compressed base64 JPEG (same compressImage() pattern as pantry scan) and
+// stores it against the token's owner.
+app.post('/cooked-it/:token', async (req, res) => {
+  const { token } = req.params;
+  const { image, mediaType } = req.body;
+  const pending = pendingCookedIt.get(token);
+  if (!pending) return res.status(404).json({ error: 'This link has expired. Please request a new one.' });
+  if (!image) return res.status(400).json({ error: 'No photo provided' });
+
+  try {
+    const [result] = await db.execute(
+      'INSERT INTO cooked_photos (user_id, recipe_id, recipe_name, image_base64, media_type) VALUES (?, ?, ?, ?, ?)',
+      [pending.userId, pending.recipeId, pending.recipeName, image, mediaType || 'image/jpeg']
+    );
+    pending.uploaded = true;
+    pending.photoId = result.insertId;
+    pendingCookedIt.set(token, pending);
+    logEvent(pending.userId, 'cooked_it_photo', { recipeId: pending.recipeId, recipeName: pending.recipeName });
+    res.json({ success: true, recipeName: pending.recipeName });
+  } catch (err) {
+    console.error('Cooked-it upload error:', err);
+    res.status(500).json({ error: 'Upload failed. Please try again.' });
+  }
+});
+
+// GET /cooked-it/:token — public status check (lets the page recover after a refresh)
+app.get('/cooked-it/:token', (req, res) => {
+  const pending = pendingCookedIt.get(req.params.token);
+  if (!pending) return res.status(404).json({ error: 'This link has expired.' });
+  res.json({ uploaded: pending.uploaded, recipeName: pending.recipeName });
+});
+
 // ─── USDA FoodData Central — Nutrition Verification ─────────────────────────
 // Looks up each key ingredient against USDA's database and sums real macros,
 // replacing the AI's estimate when a confident match is found.
@@ -2403,6 +2474,18 @@ setInterval(() => {
   const cutoff = Date.now() - 24 * 60 * 60 * 1000;
   for (const [k, v] of quickspinSessions) {
     if (v.createdAt < cutoff) quickspinSessions.delete(k);
+  }
+}, 60 * 60 * 1000);
+
+// "Cooked It" photo tokens — mirrors the pendingScans pre-login pattern.
+// Token is minted while the user is logged in (via POST /cooked-it/token,
+// either from an in-app "I made this!" button or, later, a share-your-meal
+// email) and tied to that user_id, so the public upload page needs no login.
+const pendingCookedIt = new Map();
+setInterval(() => {
+  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000; // give a share link a week to get used
+  for (const [k, v] of pendingCookedIt) {
+    if (v.createdAt < cutoff) pendingCookedIt.delete(k);
   }
 }, 60 * 60 * 1000);
 
