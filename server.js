@@ -478,6 +478,63 @@ async function logEvent(userId, eventType, data = {}) {
   }
 }
 
+// ─── GITHUB CONTENTS API HELPERS (module scope) ──────────────────────────────
+const GH_TOKEN = process.env.GITHUB_TOKEN || process.env.GITHUB_PAT;
+
+function ghRequestShared(method, url, body, token) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const data = body ? JSON.stringify(body) : null;
+    const opts = {
+      hostname: parsed.hostname, path: parsed.pathname, method,
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'MealWheelIQ/1.0',
+        ...(data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {})
+      }
+    };
+    const req = https.request(opts, r => {
+      let buf = ''; r.on('data', c => buf += c);
+      r.on('end', () => { try { resolve({ status: r.statusCode, data: JSON.parse(buf) }); } catch(e) { resolve({ status: r.statusCode, data: buf }); }});
+    });
+    req.on('error', reject);
+    if (data) req.write(data);
+    req.end();
+  });
+}
+
+async function ghPushShared(path, content, message, token = GH_TOKEN) {
+  const url = `https://api.github.com/repos/ReviveIQ/mealwheeliq/contents/${path}`;
+  let sha = null;
+  try {
+    const c = await ghRequestShared('GET', url, null, token);
+    if (c.status === 200 && c.data?.sha) sha = c.data.sha;
+  } catch(e) {
+    console.log(`ghPushShared GET ${path}:`, e.message);
+  }
+
+  const body = { message, content };
+  if (sha) body.sha = sha;
+
+  const result = await ghRequestShared('PUT', url, body, token);
+
+  if (result.status === 409 || (result.data?.message || '').includes('sha')) {
+    try {
+      const c2 = await ghRequestShared('GET', url, null, token);
+      if (c2.status === 200 && c2.data?.sha) {
+        body.sha = c2.data.sha;
+        const retry = await ghRequestShared('PUT', url, body, token);
+        console.log(`GitHub push ${path} (retry):`, retry.status, retry.data?.commit?.sha?.slice(0,7) || retry.data?.message || '');
+        return retry;
+      }
+    } catch(e2) { console.log('ghPushShared retry error:', e2.message); }
+  }
+
+  console.log(`GitHub push ${path}:`, result.status, result.data?.commit?.sha?.slice(0,7) || result.data?.message || '');
+  return result;
+}
+
 // ─── CHEF RANK LADDER (MVP slice) ────────────────────────────────────────────
 // First 6 rungs of the full "toaster to Michelin" ladder from the gamification
 // spec. Ordered array so more ranks can be appended later without touching the
