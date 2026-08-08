@@ -267,6 +267,28 @@ async function createTables() {
     )
   `);
 
+  // ─── CHEF RANK / POINTS SYSTEM (MVP slice) ──────────────────────────────
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS user_points (
+      user_id INT PRIMARY KEY,
+      total_points INT NOT NULL DEFAULT 0,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+  `);
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS point_events (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      action_type VARCHAR(50) NOT NULL,
+      points INT NOT NULL,
+      event_data JSON,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_user_action_date (user_id, action_type, created_at),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+  `);
+
   // ── Migrations — safe to run on every boot, errors mean column exists ────────
   const migrations = [
     { sql: "ALTER TABLE users ADD COLUMN facebook_id VARCHAR(50) UNIQUE", name: 'facebook_id' },
@@ -398,7 +420,8 @@ Here's how to get started:
 A few things worth trying once you're in:
 - Dietary filters (vegetarian, gluten-free, keto, and a dozen more)
 - Soup Creator, for something warm and simmered
-- Your Cookbook tab saves every recipe you've ever spun — searchable, forever${passwordTip}
+- Your Cookbook tab saves every recipe you've ever spun — searchable, forever
+- Every spin, share, and photo you upload earns points toward your chef rank — you start as a Toaster Novice, check the "My Chef" tab to see how it climbs${passwordTip}
 
 Questions or feedback? Just reply — a real person (me) reads every email.
 
@@ -424,6 +447,87 @@ async function logEvent(userId, eventType, data = {}) {
   } catch (e) {
     console.error('logEvent failed:', eventType, e.message);
   }
+}
+
+// ─── CHEF RANK LADDER (MVP slice) ────────────────────────────────────────────
+// First 6 rungs of the full "toaster to Michelin" ladder from the gamification
+// spec. Ordered array so more ranks can be appended later without touching the
+// lookup logic below. Mirror of the RANKS array in app.html — keep both in sync.
+const RANKS = [
+  { rank: 1, key: 'toaster_novice', title: 'Toaster Novice', threshold: 0, emoji: '🍞', kitchenScene: 'Studio apartment counter, toaster' },
+  { rank: 2, key: 'hot_water_helper', title: 'Hot Water Helper', threshold: 75, emoji: '☕', kitchenScene: 'Same counter + electric kettle' },
+  { rank: 3, key: 'microwave_apprentice', title: 'Microwave Apprentice', threshold: 175, emoji: '📻', kitchenScene: 'Counter + microwave' },
+  { rank: 4, key: 'stovetop_starter', title: 'Stovetop Starter', threshold: 350, emoji: '🍳', kitchenScene: 'Small apartment stove, one pan' },
+  { rank: 5, key: 'home_cook', title: 'Home Cook', threshold: 650, emoji: '🥘', kitchenScene: 'Real kitchen, two burners + oven' },
+  { rank: 6, key: 'home_chef', title: 'Home Chef', threshold: 1200, emoji: '🧑\u200d🍳', kitchenScene: 'Full home kitchen, prep station' }
+];
+
+// Points economy — MVP wires up the three actions the product asked for first:
+// spinning, sharing, and uploading a "cooked it" photo. Streaks, 3-day/week-plan
+// completion, and referrals are in the full spec but deferred to a later pass.
+const POINTS = { spin: 5, firstSpinOfDayBonus: 10, share: 15, cookedItPhoto: 20 };
+const DAILY_POINT_CAP = 150; // guardrail so points reward habit, not automation
+
+function getRankForPoints(points) {
+  let current = RANKS[0];
+  for (const r of RANKS) {
+    if (points >= r.threshold) current = r; else break;
+  }
+  const idx = RANKS.findIndex(r => r.key === current.key);
+  const next = RANKS[idx + 1] || null;
+  return {
+    rank: current,
+    next,
+    pointsToNext: next ? next.threshold - points : 0,
+    progressPct: next
+      ? Math.min(100, Math.round(((points - current.threshold) / (next.threshold - current.threshold)) * 100))
+      : 100
+  };
+}
+
+// Awards points with a daily cap guardrail. Returns however much was actually
+// awarded (may be less than requested, or 0, if the user already hit the cap
+// today) along with their new lifetime total.
+async function awardPoints(userId, actionType, points, meta = {}) {
+  if (!userId || !points) return { awarded: 0, totalPoints: null };
+  try {
+    const [todayRows] = await db.execute(
+      `SELECT COALESCE(SUM(points),0) as todayTotal FROM point_events WHERE user_id = ? AND DATE(created_at) = CURDATE()`,
+      [userId]
+    );
+    const remainingToday = Math.max(0, DAILY_POINT_CAP - (todayRows[0]?.todayTotal || 0));
+    const toAward = Math.min(points, remainingToday);
+
+    const [existingRows] = await db.execute('SELECT total_points FROM user_points WHERE user_id = ?', [userId]);
+    if (toAward <= 0) {
+      return { awarded: 0, totalPoints: existingRows[0]?.total_points || 0 };
+    }
+
+    await db.execute(
+      'INSERT INTO point_events (user_id, action_type, points, event_data) VALUES (?, ?, ?, ?)',
+      [userId, actionType, toAward, JSON.stringify(meta)]
+    );
+    await db.execute(
+      `INSERT INTO user_points (user_id, total_points) VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE total_points = total_points + ?`,
+      [userId, toAward, toAward]
+    );
+    const newTotal = (existingRows[0]?.total_points || 0) + toAward;
+    return { awarded: toAward, totalPoints: newTotal };
+  } catch (e) {
+    console.error('awardPoints failed:', actionType, e.message);
+    return { awarded: 0, totalPoints: null };
+  }
+}
+
+async function hasSpunToday(userId) {
+  try {
+    const [rows] = await db.execute(
+      `SELECT 1 FROM point_events WHERE user_id = ? AND action_type = 'spin' AND DATE(created_at) = CURDATE() LIMIT 1`,
+      [userId]
+    );
+    return rows.length > 0;
+  } catch (e) { return false; }
 }
 
 app.post('/auth/signup', async (req, res) => {
@@ -884,7 +988,8 @@ app.post('/cooked-it/:token', async (req, res) => {
     pending.photoId = result.insertId;
     pendingCookedIt.set(token, pending);
     logEvent(pending.userId, 'cooked_it_photo', { recipeId: pending.recipeId, recipeName: pending.recipeName });
-    res.json({ success: true, recipeName: pending.recipeName });
+    const pointsResult = await awardPoints(pending.userId, 'cooked_it_photo', POINTS.cookedItPhoto, { recipeId: pending.recipeId });
+    res.json({ success: true, recipeName: pending.recipeName, pointsAwarded: pointsResult.awarded });
   } catch (err) {
     console.error('Cooked-it upload error:', err);
     res.status(500).json({ error: 'Upload failed. Please try again.' });
@@ -896,6 +1001,58 @@ app.get('/cooked-it/:token', (req, res) => {
   const pending = pendingCookedIt.get(req.params.token);
   if (!pending) return res.status(404).json({ error: 'This link has expired.' });
   res.json({ uploaded: pending.uploaded, recipeName: pending.recipeName });
+});
+
+// ─── CHEF RANK / POINTS ROUTES ───────────────────────────────────────────────
+
+// POST /points/spin — authenticated, called once per completed spin action
+// (fridge/week/soup) from the frontend, after all the parallel /generate
+// calls for that spin have resolved. Deliberately NOT awarded inside
+// /generate itself — a single "spin" fires multiple parallel /generate
+// requests (one per recipe card), so awarding there would over-count.
+app.post('/points/spin', authMiddleware, async (req, res) => {
+  try {
+    const alreadySpunToday = await hasSpunToday(req.user.userId);
+    let total = POINTS.spin;
+    const meta = { mode: req.body?.mode || 'fridge' };
+    let result = await awardPoints(req.user.userId, 'spin', total, meta);
+    if (!alreadySpunToday) {
+      const bonus = await awardPoints(req.user.userId, 'spin_daily_bonus', POINTS.firstSpinOfDayBonus, meta);
+      result = { awarded: result.awarded + bonus.awarded, totalPoints: bonus.totalPoints ?? result.totalPoints };
+    }
+    const rankInfo = getRankForPoints(result.totalPoints || 0);
+    res.json({ ...result, rank: rankInfo });
+  } catch (e) {
+    console.error('points/spin error:', e.message);
+    res.status(500).json({ error: 'Could not award points' });
+  }
+});
+
+// POST /points/share — authenticated, called client-side whenever a share
+// action fires (Facebook, native share sheet, recipe link copy). Same trust
+// model as the rest of the app's client-reported events (e.g. pantry_scan).
+app.post('/points/share', authMiddleware, async (req, res) => {
+  try {
+    const result = await awardPoints(req.user.userId, 'share', POINTS.share, { source: req.body?.source || 'unknown' });
+    const rankInfo = getRankForPoints(result.totalPoints || 0);
+    res.json({ ...result, rank: rankInfo });
+  } catch (e) {
+    console.error('points/share error:', e.message);
+    res.status(500).json({ error: 'Could not award points' });
+  }
+});
+
+// GET /points/me — current total, rank, and progress to the next rank.
+app.get('/points/me', authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await db.execute('SELECT total_points FROM user_points WHERE user_id = ?', [req.user.userId]);
+    const totalPoints = rows[0]?.total_points || 0;
+    const rankInfo = getRankForPoints(totalPoints);
+    res.json({ totalPoints, rank: rankInfo, ladder: RANKS });
+  } catch (e) {
+    console.error('points/me error:', e.message);
+    res.status(500).json({ error: 'Could not load points' });
+  }
 });
 
 // ─── USDA FoodData Central — Nutrition Verification ─────────────────────────
@@ -1651,6 +1808,13 @@ app.post('/recipe/:id/og-page', authMiddleware, async (req, res) => {
     );
     if (!rows.length) return res.status(404).json({ error: 'Recipe not found' });
     const r = rows[0];
+
+    // Sharer's chef rank — shown as a small badge on the OG page so friends
+    // see it when the recipe link is opened, not just the recipe itself.
+    const [pointsRows] = await db.execute('SELECT total_points FROM user_points WHERE user_id = ?', [req.user.userId]);
+    const sharerRankInfo = getRankForPoints(pointsRows[0]?.total_points || 0);
+    const rankBadgeHtml = `<p style="color:#C94B2A;font-weight:700;font-size:13px;margin-bottom:1rem">${sharerRankInfo.rank.emoji} Shared by a ${sharerRankInfo.rank.title} on MealWheelIQ</p>`;
+
     const ings = typeof r.ingredients === 'string' ? JSON.parse(r.ingredients || '[]') : (r.ingredients || []);
     const steps = typeof r.steps === 'string' ? JSON.parse(r.steps || '[]') : (r.steps || []);
     const top3 = ings.slice(0, 3).map(i => i.name).join(', ');
@@ -1786,7 +1950,7 @@ app.post('/recipe/:id/og-page', authMiddleware, async (req, res) => {
   <meta name="twitter:image" content="${aiUrl}">
   <link rel="canonical" href="${pageUrl}">
 </head><body style="font-family:sans-serif;max-width:600px;margin:2rem auto;padding:1rem;text-align:center">
-  <h1>${rec.recipe_name}</h1><p>${desc}</p>
+  <h1>${rec.recipe_name}</h1>${rankBadgeHtml}<p>${desc}</p>
   <a href="${pageUrl}" style="background:#C94B2A;color:white;padding:.75rem 2rem;border-radius:24px;text-decoration:none;font-weight:700;display:inline-block;margin-top:1rem">View full recipe on MealWheelIQ →</a>
   <p style="color:#999;font-size:12px;margin-top:2rem"><a href="https://mealwheeliq.com" style="color:#C94B2A">MealWheelIQ</a> — Spin it. Cook it. Love it.</p>
 </body></html>`;
@@ -1863,6 +2027,7 @@ app.post('/recipe/:id/og-page', authMiddleware, async (req, res) => {
 </head>
 <body style="font-family:sans-serif;max-width:640px;margin:2rem auto;padding:1rem;color:#1C1714">
   <h1 style="margin-bottom:.3rem">${r.emoji || '🍽️'} ${r.recipe_name}</h1>
+  ${rankBadgeHtml}
   <p style="color:#666;margin-bottom:1rem">${r.time || '30 min'} · ${r.difficulty || 'Easy'} · ${r.style || ''} · ${r.calories_per_serving} kcal per serving</p>
   <img src="${finalImgUrl}" alt="${r.recipe_name}" style="width:100%;border-radius:12px;margin-bottom:1.5rem">
 
@@ -2248,6 +2413,7 @@ app.get('/admin/send-reengagement-emails', adminAuth, async (req, res) => {
     <p style="font-size:15px;color:#1C1714;line-height:1.6">Hey there,</p>
     <p style="font-size:15px;color:#1C1714;line-height:1.6">It's officially been a week since you signed up for MealWheelIQ, and your wheel is just sitting there. Untouched. Getting dusty. It has feelings too, probably.</p>
     <p style="font-size:15px;color:#1C1714;line-height:1.6">Statistically speaking, you're probably reading this on your phone while standing in front of an open fridge right now, wondering what to make. We see you. No judgment.</p>
+    <p style="font-size:15px;color:#1C1714;line-height:1.6">Also — you're currently sitting at Toaster Novice on your chef rank. One spin fixes that.</p>
     <div style="text-align:center;margin:24px 0">
       <a href="${scanUrl}" style="background:#1C1714;color:white;text-decoration:none;border-radius:24px;padding:14px 32px;font-size:15px;font-weight:700;display:inline-block">📸 Snap a photo right now →</a>
     </div>
@@ -2272,6 +2438,8 @@ app.get('/admin/send-reengagement-emails', adminAuth, async (req, res) => {
 It's officially been a week since you signed up for MealWheelIQ, and your wheel is just sitting there. Untouched. Getting dusty. It has feelings too, probably.
 
 Statistically speaking, you're probably reading this on your phone while standing in front of an open fridge right now, wondering what to make. We see you. No judgment.
+
+Also — you're currently sitting at Toaster Novice on your chef rank. One spin fixes that.
 
 Snap a photo right now (no login needed yet): ${scanUrl}
 We'll save your results and you can log in right after to get your recipes.
