@@ -1329,6 +1329,62 @@ app.post('/avatar/equip', authMiddleware, async (req, res) => {
   }
 });
 
+// GET /admin/generate-avatar-art — one-time (or per-item) asset generation.
+// Bryan triggers this manually. Query params: ?only=key1,key2 to regenerate
+// specific items, ?force=true to regenerate even if the file already exists.
+app.get('/admin/generate-avatar-art', adminAuth, async (req, res) => {
+  if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: 'OPENAI_API_KEY not configured' });
+
+  const onlyKeys = req.query.only ? req.query.only.split(',').map(s => s.trim()) : null;
+  const force = req.query.force === 'true';
+  const keysToRun = (onlyKeys || AVATAR_ART_KEYS).filter(k => AVATAR_ART_KEYS.includes(k));
+
+  const OpenAI = require('openai');
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const sharp = require('sharp');
+  const results = [];
+
+  for (const key of keysToRun) {
+    const ghPath = `avatar-art/${key}.png`;
+    try {
+      if (!force) {
+        const check = await ghRequestShared('GET', `https://api.github.com/repos/ReviveIQ/mealwheeliq/contents/${ghPath}`, null, GH_TOKEN);
+        if (check.status === 200) {
+          results.push({ key, status: 'skipped (already exists — pass ?force=true to regenerate)' });
+          continue;
+        }
+      }
+
+      const prompt = avatarArtPrompt(key);
+      if (!prompt) { results.push({ key, status: 'error: no prompt defined for this key' }); continue; }
+
+      const isTransparent = AVATAR_ART_TRANSPARENT_KEYS.has(key);
+      const genParams = { model: 'gpt-image-1', prompt, n: 1, size: '1024x1024' };
+      if (isTransparent) genParams.background = 'transparent';
+
+      const imgResp = await openai.images.generate(genParams);
+      const b64 = imgResp.data[0]?.b64_json;
+      if (!b64) { results.push({ key, status: 'error: no image returned' }); continue; }
+
+      const imgBuffer = Buffer.from(b64, 'base64');
+      const compressed = await sharp(imgBuffer)
+        .resize(800, 800, { fit: 'inside' })
+        .png({ quality: 85, compressionLevel: 9 })
+        .toBuffer();
+      const finalB64 = compressed.toString('base64');
+
+      await ghPushShared(ghPath, finalB64, `art: generate avatar asset ${key}`);
+      results.push({ key, status: 'generated', sizeKB: Math.round(compressed.length / 1024) });
+      console.log(`Avatar art generated: ${key} (${Math.round(compressed.length / 1024)}KB)`);
+    } catch (e) {
+      console.error(`Avatar art generation failed for ${key}:`, e.message);
+      results.push({ key, status: 'error: ' + e.message });
+    }
+  }
+
+  res.json({ done: true, count: results.length, results });
+});
+
 // ─── USDA FoodData Central — Nutrition Verification ─────────────────────────
 // Looks up each key ingredient against USDA's database and sums real macros,
 // replacing the AI's estimate when a confident match is found.
