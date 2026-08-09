@@ -2459,7 +2459,37 @@ app.get('/admin/generate-avatar-art', adminAuth, async (req, res) => {
       if (!b64) { results.push({ key, status: 'error: no image returned' }); continue; }
 
       const imgBuffer = Buffer.from(b64, 'base64');
-      const compressed = await sharp(imgBuffer)
+
+      // Trim the empty transparent margin the model tends to leave around the
+      // subject, so the width/top percentage-based CSS layering in app.html lines
+      // up with the actual artwork instead of a lot of dead space (this was
+      // causing hats/aprons to render floating away from the character). Apron
+      // items additionally get their top ~22% cropped off — the model draws a
+      // tall neck-loop that otherwise reaches up and covers the character's face
+      // once composited. Background layers (bg_*) are left untouched since they
+      // render full-bleed via object-fit:cover, not percentage-positioned.
+      let processedSharp = sharp(imgBuffer);
+      if (isTransparent) {
+        const trimmedBuffer = await sharp(imgBuffer).trim().png().toBuffer();
+        const trimmedMeta = await sharp(trimmedBuffer).metadata();
+        let tw = trimmedMeta.width, th = trimmedMeta.height;
+
+        let working = sharp(trimmedBuffer);
+        if (key.startsWith('apron_')) {
+          const cropTop = Math.round(th * 0.22);
+          working = sharp(trimmedBuffer).extract({ left: 0, top: cropTop, width: tw, height: th - cropTop });
+          th = th - cropTop;
+        }
+
+        const padW = Math.round(tw * 0.04);
+        const padH = Math.round(th * 0.04);
+        processedSharp = working.extend({
+          top: padH, bottom: padH, left: padW, right: padW,
+          background: { r: 0, g: 0, b: 0, alpha: 0 }
+        });
+      }
+
+      const compressed = await processedSharp
         .resize(800, 800, { fit: 'inside' })
         .png({ quality: 85, compressionLevel: 9 })
         .toBuffer();
